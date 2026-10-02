@@ -1,6 +1,11 @@
 Solix changelog
 ===============
 
+0.2.2 (2026-10-02)
+- Parallel scheduler priority by distance (idea from Lucis): each chunk's light task gets the chunk's vanilla queue
+  level (ChunkMap#getChunkQueueLevel, lower = closer to a player / higher ticket) as its FlowSched priority instead
+  of ScalableLux's constant, so chunks near players light first. One FlowSched priority bucket per vanilla level.
+
 0.2.1 (2026-10-02)
 - Jar now contains LICENSE-FlowSched.txt (the MIT notice for the vendored FlowSched executor); 0.2.0 missed it.
 

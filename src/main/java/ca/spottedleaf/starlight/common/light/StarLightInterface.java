@@ -655,10 +655,19 @@ public final class StarLightInterface {
     }
 
     /**
-     * FlowSched priority of the light task for a chunk, lower runs sooner.
+     * FlowSched priority of the light task for a chunk, lower runs sooner. Solix: use the chunk's vanilla queue level
+     * (ChunkMap#getChunkQueueLevel, the same value vanilla uses to order light tasks), so chunks near players are lit
+     * first, instead of ScalableLux's constant priority. Idea from Lucis.
      */
     private int getSchedulingPriority(final long chunkKey) {
-        return GlobalExecutors.PRIORITY_COUNT / 2;
+        if (this.world instanceof ServerLevel serverLevel) {
+            try {
+                return serverLevel.getChunkSource().chunkMap.getChunkQueueLevel(chunkKey).getAsInt();
+            } catch (final Throwable thr) {
+                // fall through to the default
+            }
+        }
+        return GlobalExecutors.PRIORITY_COUNT - 1;
     }
 
     /**
