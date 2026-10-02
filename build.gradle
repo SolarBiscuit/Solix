@@ -78,6 +78,7 @@ tasks.named('jar', Jar).configure {
     from('LICENSE') {
         rename { "LICENSE_${mod_id}" }
     }
+    from('LICENSE-FlowSched.txt')
     from('NOTICE') {
         rename { "NOTICE_${mod_id}" }
     }

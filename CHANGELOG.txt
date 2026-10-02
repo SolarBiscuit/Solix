@@ -1,6 +1,29 @@
 Solix changelog
 ===============
 
+0.2.1 (2026-10-02)
+- Jar now contains LICENSE-FlowSched.txt (the MIT notice for the vendored FlowSched executor); 0.2.0 missed it.
+
+0.2.0 (2026-10-02)
+(+0.1.0: this change adds more than 500 lines, mostly the vendored FlowSched executor.)
+- Parallel server light scheduler from ScalableLux (patch 0006): each chunk with queued light work becomes a task on
+  a pool of "Solix Light Worker" threads that locks the 5x5 chunks around it, so independent areas light in
+  parallel. Includes ScalableLux 0db04dc (finished per-chunk futures are removed; they leaked before).
+  The client keeps Starlight's synchronous path.
+- Vendored only FlowSched's executor (ExecutorManager, WorkerThread, Task, LockToken, SimpleTask,
+  BucketTaskPriorityQueue, Assertions; MIT, commit a60f952, which includes the 42e2aad relock deadlock fix) under
+  ca.spottedleaf.starlight.interndep.flowsched. LICENSE-FlowSched.txt is in the jar.
+- tryScheduleUpdate throttle (ScalableLux 9d6f8cb) as a @Redirect of hasLightWork(): a scheduling pass runs when new
+  light work was queued, otherwise at most every throttle_ms. Needed because C2ME's threading.lighting calls
+  tryScheduleUpdate after every light-thread task.
+- New config file config/solix.toml (created on first start, read once at mixin load):
+  parallel = true, parallelism = 0 (0 = automatic, max(1, CPU threads / 4)), throttle_ms = 10.
+  parallelism = 1 or parallel = false uses the serial Starlight path (fallback for ScalableLux issue #36).
+- If Starlight, ScalableLux or Lucis is installed, Solix disables its own mixins and logs why, so Forge's
+  incompatibility error is shown instead of a mixin crash.
+- A worker task that throws now logs the chunk and still completes the chunk's light future (no stuck ticket).
+- Debug: -Dsolix.debug.sectionTypes=true logs getDebugSectionType counts around spawn at server start.
+
 0.1.4 (2026-10-02)
 - LevelLightEngine.getDebugSectionType now reports LIGHT_AND_DATA for sections with light data (from ScalableLux
   77b85a8). Starlight nulls vanilla's light engines, so this always returned EMPTY and Neo-Voxy skipped every chunk

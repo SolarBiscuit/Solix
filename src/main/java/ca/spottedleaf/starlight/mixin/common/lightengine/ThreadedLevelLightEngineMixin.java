@@ -1,8 +1,10 @@
 package ca.spottedleaf.starlight.mixin.common.lightengine;
 
+import ca.spottedleaf.starlight.common.config.SolixConfig;
 import ca.spottedleaf.starlight.common.light.StarLightEngine;
 import ca.spottedleaf.starlight.common.light.StarLightInterface;
 import ca.spottedleaf.starlight.common.light.StarLightLightingProvider;
+import ca.spottedleaf.starlight.common.thread.GlobalExecutors;
 import ca.spottedleaf.starlight.common.util.CoordinateUtils;
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import net.minecraft.core.BlockPos;
@@ -25,7 +27,10 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Overwrite;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Redirect;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
 @Mixin(ThreadedLevelLightEngine.class)
@@ -225,4 +230,43 @@ public abstract class ThreadedLevelLightEngineMixin extends LevelLightEngine imp
             }
         });
     }
+
+    // Solix start - ScalableLux scheduling throttle (9d6f8cb), written as a @Redirect because Forge 47 has no MixinExtras
+    @Unique
+    private final AtomicLong solix$lastLightUpdate = new AtomicLong(0L);
+
+    /**
+     * With the parallel scheduler, queued chunk work stays in the queue until a worker picks it up, so hasLightWork()
+     * stays true while workers run. C2ME's threading.lighting module calls tryScheduleUpdate again after every light
+     * thread task, which would then reschedule the light thread in a tight loop. Only allow a scheduling pass when new
+     * work was queued, or at most every throttle_ms otherwise.
+     */
+    @Redirect(
+            method = "tryScheduleUpdate",
+            at = @At(
+                    value = "INVOKE",
+                    target = "Lnet/minecraft/world/level/lighting/LevelLightEngine;hasLightWork()Z"
+            )
+    )
+    private boolean solix$throttleScheduling(final LevelLightEngine instance) {
+        final StarLightInterface engine = this.getLightEngine();
+        // same as LevelLightEngine#hasLightWork (overwritten in LevelLightEngineMixin)
+        if (!engine.hasUpdates()) {
+            return false;
+        }
+        if (!GlobalExecutors.ENABLED || engine.isQueueDirty()) {
+            return true;
+        }
+        final long throttle = SolixConfig.THROTTLE_NANOS;
+        if (throttle <= 0L) {
+            return true;
+        }
+        final long lastUpdate = this.solix$lastLightUpdate.get();
+        final long currentTime = System.nanoTime();
+        if (currentTime - lastUpdate >= throttle) {
+            return this.solix$lastLightUpdate.compareAndSet(lastUpdate, currentTime);
+        }
+        return false;
+    }
+    // Solix end
 }

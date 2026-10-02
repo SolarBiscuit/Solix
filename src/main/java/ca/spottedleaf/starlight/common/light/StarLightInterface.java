@@ -1,16 +1,25 @@
 package ca.spottedleaf.starlight.common.light;
 
 import ca.spottedleaf.starlight.common.chunk.ExtendedChunk;
+import ca.spottedleaf.starlight.common.thread.GlobalExecutors;
+import ca.spottedleaf.starlight.common.thread.SchedulingUtil;
 import ca.spottedleaf.starlight.common.util.CoordinateUtils;
 import ca.spottedleaf.starlight.common.util.WorldUtil;
 import ca.spottedleaf.starlight.common.world.ExtendedWorld;
+import com.mojang.logging.LogUtils;
 import it.unimi.dsi.fastutil.longs.Long2ObjectLinkedOpenHashMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
+import it.unimi.dsi.fastutil.longs.Long2ReferenceMap;
+import it.unimi.dsi.fastutil.longs.Long2ReferenceMaps;
+import it.unimi.dsi.fastutil.longs.Long2ReferenceOpenHashMap;
+import it.unimi.dsi.fastutil.objects.ObjectBidirectionalIterator;
 import it.unimi.dsi.fastutil.shorts.ShortCollection;
 import it.unimi.dsi.fastutil.shorts.ShortOpenHashSet;
 import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ThreadedLevelLightEngine;
 import net.minecraft.server.level.TicketType;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
@@ -25,10 +34,14 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.slf4j.Logger;
 import java.util.function.Consumer;
 import java.util.function.IntConsumer;
 
 public final class StarLightInterface {
+
+    private static final Logger LOGGER = LogUtils.getLogger(); // Solix
 
     public static final TicketType<ChunkPos> CHUNK_WORK_TICKET = TicketType.create("starlight_chunk_work_ticket", (p1, p2) -> Long.compare(p1.toLong(), p2.toLong()));
 
@@ -555,40 +568,20 @@ public final class StarLightInterface {
             return;
         }
 
+        // Solix start - ScalableLux parallel scheduler (server only; the client keeps the synchronous path)
+        if (GlobalExecutors.ENABLED && this.lightEngine instanceof ThreadedLevelLightEngine threadedLevelLightEngine) {
+            this.schedulePropagation0(threadedLevelLightEngine);
+            return;
+        }
+        // Solix end
+
         final SkyStarLightEngine skyEngine = this.getSkyLightEngine();
         final BlockStarLightEngine blockEngine = this.getBlockLightEngine();
 
         try {
             LightQueue.ChunkTasks task;
             while ((task = this.lightQueue.removeFirstTask()) != null) {
-                if (task.lightTasks != null) {
-                    for (final Runnable run : task.lightTasks) {
-                        run.run();
-                    }
-                }
-
-                final long coordinate = task.chunkCoordinate;
-                final int chunkX = CoordinateUtils.getChunkX(coordinate);
-                final int chunkZ = CoordinateUtils.getChunkZ(coordinate);
-
-                final Set<BlockPos> positions = task.changedPositions;
-                final Boolean[] sectionChanges = task.changedSectionSet;
-
-                if (skyEngine != null && (!positions.isEmpty() || sectionChanges != null)) {
-                    skyEngine.blocksChangedInChunk(this.lightAccess, chunkX, chunkZ, positions, sectionChanges);
-                }
-                if (blockEngine != null && (!positions.isEmpty() || sectionChanges != null)) {
-                    blockEngine.blocksChangedInChunk(this.lightAccess, chunkX, chunkZ, positions, sectionChanges);
-                }
-
-                if (skyEngine != null && task.queuedEdgeChecksSky != null) {
-                    skyEngine.checkChunkEdges(this.lightAccess, chunkX, chunkZ, task.queuedEdgeChecksSky);
-                }
-                if (blockEngine != null && task.queuedEdgeChecksBlock != null) {
-                    blockEngine.checkChunkEdges(this.lightAccess, chunkX, chunkZ, task.queuedEdgeChecksBlock);
-                }
-
-                task.onComplete.complete(null);
+                this.handleUpdateInternal(task, skyEngine, blockEngine);
             }
         } finally {
             this.releaseSkyLightEngine(skyEngine);
@@ -596,10 +589,122 @@ public final class StarLightInterface {
         }
     }
 
+    // Solix start - ScalableLux parallel scheduler (patch 0006 + 0db04dc), adapted to Solix/Forge 1.20.1
+    private static final AtomicInteger INSTANCE_COUNTER = new AtomicInteger(0);
+    private static final CompletableFuture<Void> COMPLETED_FUTURE = CompletableFuture.completedFuture(null);
+    private final int instanceId = INSTANCE_COUNTER.getAndIncrement();
+    private final Long2ReferenceMap<CompletableFuture<Void>> chunkFutures = Long2ReferenceMaps.synchronize(new Long2ReferenceOpenHashMap<>());
+
+    /**
+     * Runs on the light thread: schedules one worker task per chunk that has queued light work and no task in flight.
+     * Each worker task locks the 5x5 chunks around its chunk (Starlight touches the 3x3 neighbourhood), removes
+     * the chunk's queued work at run time and processes it like the serial path.
+     */
+    private void schedulePropagation0(final ThreadedLevelLightEngine threadedLevelLightEngine) {
+        synchronized (this.lightQueue) {
+            final ObjectBidirectionalIterator<Long2ObjectMap.Entry<LightQueue.ChunkTasks>> iterator = this.lightQueue.chunkTasks.long2ObjectEntrySet().fastIterator();
+            while (iterator.hasNext()) {
+                final Long2ObjectMap.Entry<LightQueue.ChunkTasks> entry = iterator.next();
+                final long pos = entry.getLongKey();
+                if (!this.chunkFutures.getOrDefault(pos, COMPLETED_FUTURE).isDone()) {
+                    continue;
+                }
+                final CompletableFuture<Void> future = new CompletableFuture<>();
+                SchedulingUtil.scheduleTask(
+                        this.instanceId,
+                        () -> {
+                            LightQueue.ChunkTasks tasks = null;
+                            try {
+                                synchronized (this.lightQueue) {
+                                    tasks = this.lightQueue.chunkTasks.remove(pos);
+                                }
+                                if (tasks != null) {
+                                    final SkyStarLightEngine skyEngine = this.getSkyLightEngine();
+                                    final BlockStarLightEngine blockEngine = this.getBlockLightEngine();
+                                    try {
+                                        this.handleUpdateInternal(tasks, skyEngine, blockEngine);
+                                    } finally {
+                                        this.releaseSkyLightEngine(skyEngine);
+                                        this.releaseBlockLightEngine(blockEngine);
+                                    }
+
+                                    threadedLevelLightEngine.tryScheduleUpdate();
+                                }
+                                future.complete(null);
+                            } catch (final Throwable thr) {
+                                LOGGER.error("Solix: failed to process light updates for chunk ("
+                                        + CoordinateUtils.getChunkX(pos) + "," + CoordinateUtils.getChunkZ(pos) + ")", thr);
+                                if (tasks != null) {
+                                    // do not leak the chunk work ticket
+                                    tasks.onComplete.complete(null);
+                                }
+                                future.completeExceptionally(thr);
+                            }
+                        },
+                        CoordinateUtils.getChunkX(pos),
+                        CoordinateUtils.getChunkZ(pos),
+                        2,
+                        this.getSchedulingPriority(pos)
+                );
+                this.chunkFutures.put(pos, future);
+                // ScalableLux 0db04dc: remove finished futures, otherwise the map grows with every chunk ever lit
+                future.whenComplete((final Void unused, final Throwable throwable) -> this.chunkFutures.remove(pos, future));
+            }
+            this.lightQueue.queueDirty = false;
+        }
+    }
+
+    /**
+     * FlowSched priority of the light task for a chunk, lower runs sooner.
+     */
+    private int getSchedulingPriority(final long chunkKey) {
+        return GlobalExecutors.PRIORITY_COUNT / 2;
+    }
+
+    /**
+     * Only relevant on server lighting with parallel scheduling, best-effort check if the queue is dirty.
+     */
+    public boolean isQueueDirty() {
+        return this.lightQueue.queueDirty;
+    }
+
+    private void handleUpdateInternal(final LightQueue.ChunkTasks task, final SkyStarLightEngine skyEngine, final BlockStarLightEngine blockEngine) {
+        if (task.lightTasks != null) {
+            for (final Runnable run : task.lightTasks) {
+                run.run();
+            }
+        }
+
+        final long coordinate = task.chunkCoordinate;
+        final int chunkX = CoordinateUtils.getChunkX(coordinate);
+        final int chunkZ = CoordinateUtils.getChunkZ(coordinate);
+
+        final Set<BlockPos> positions = task.changedPositions;
+        final Boolean[] sectionChanges = task.changedSectionSet;
+
+        if (skyEngine != null && (!positions.isEmpty() || sectionChanges != null)) {
+            skyEngine.blocksChangedInChunk(this.lightAccess, chunkX, chunkZ, positions, sectionChanges);
+        }
+        if (blockEngine != null && (!positions.isEmpty() || sectionChanges != null)) {
+            blockEngine.blocksChangedInChunk(this.lightAccess, chunkX, chunkZ, positions, sectionChanges);
+        }
+
+        if (skyEngine != null && task.queuedEdgeChecksSky != null) {
+            skyEngine.checkChunkEdges(this.lightAccess, chunkX, chunkZ, task.queuedEdgeChecksSky);
+        }
+        if (blockEngine != null && task.queuedEdgeChecksBlock != null) {
+            blockEngine.checkChunkEdges(this.lightAccess, chunkX, chunkZ, task.queuedEdgeChecksBlock);
+        }
+
+        task.onComplete.complete(null);
+    }
+    // Solix end
+
     public static final class LightQueue {
 
         protected final Long2ObjectLinkedOpenHashMap<ChunkTasks> chunkTasks = new Long2ObjectLinkedOpenHashMap<>();
         protected final StarLightInterface manager;
+        protected volatile boolean queueDirty = false; // Solix - ScalableLux scheduler
 
         public LightQueue(final StarLightInterface manager) {
             this.manager = manager;
@@ -612,6 +717,7 @@ public final class StarLightInterface {
         public synchronized LightQueue.ChunkTasks queueBlockChange(final BlockPos pos) {
             final ChunkTasks tasks = this.chunkTasks.computeIfAbsent(CoordinateUtils.getChunkKey(pos), ChunkTasks::new);
             tasks.changedPositions.add(pos.immutable());
+            this.queueDirty = true; // Solix
             return tasks;
         }
 
@@ -623,6 +729,7 @@ public final class StarLightInterface {
             }
             tasks.changedSectionSet[pos.getY() - this.manager.minSection] = Boolean.valueOf(newEmptyValue);
 
+            this.queueDirty = true; // Solix
             return tasks;
         }
 
@@ -633,6 +740,7 @@ public final class StarLightInterface {
             }
             tasks.lightTasks.add(lightTask);
 
+            this.queueDirty = true; // Solix
             return tasks;
         }
 
@@ -645,6 +753,7 @@ public final class StarLightInterface {
             }
             queuedEdges.addAll(sections);
 
+            this.queueDirty = true; // Solix
             return tasks;
         }
 
@@ -657,6 +766,7 @@ public final class StarLightInterface {
             }
             queuedEdges.addAll(sections);
 
+            this.queueDirty = true; // Solix
             return tasks;
         }
 
@@ -668,6 +778,7 @@ public final class StarLightInterface {
             if (tasks != null) {
                 tasks.onComplete.complete(null);
             }
+            this.queueDirty = true; // Solix
         }
 
         public synchronized ChunkTasks removeFirstTask() {
