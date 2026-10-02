@@ -1,6 +1,17 @@
 Solix changelog
 ===============
 
+0.1.1 (2026-10-02)
+- Backported Starlight forge-branch fixes made after 1.1.2 (all apply to 1.20.1 unchanged except where noted):
+  - 6585522: light queue methods return the per-chunk task object, so many block updates in one chunk in the same
+    tick add the chunk-work ticket only once (water draining etc.). Needed by the parallel scheduler.
+  - 2084f46: do not fill/maintain vanilla's unused skyLightSources (saves time on chunk creation and block changes).
+  - 2b3204b: default ExtendedWorld implementation in Level, for mods with custom Level classes.
+    Fixed an upstream typo in it: getAnyChunkImmediately used (chunkX, chunkX) instead of (chunkX, chunkZ).
+  - 4d59d86: initialise the nibble arrays in the ChunkAccess constructor, for mods with custom ChunkAccess classes.
+  - c4d051c: WorldGenRegion returns brightness 0 until the target chunk is lit (vanilla-like feature placement,
+    e.g. mushrooms in swamps).
+
 0.1.0 (2026-10-02)
 - First version. Based on Starlight Forge 1.1.2 (PaperMC/Starlight forge branch, commit 1cda73c), built for
   Minecraft 1.20.1 / Forge 47.4.16.

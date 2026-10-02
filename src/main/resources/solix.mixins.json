@@ -15,6 +15,7 @@
     "common.world.ChunkSerializerMixin",
     "common.world.LevelMixin",
     "common.world.ServerWorldMixin",
+    "common.world.WorldGenRegionMixin",
     "compat.c2me.C2MEChunkDataSerializerMixin"
   ],
   "client": [
