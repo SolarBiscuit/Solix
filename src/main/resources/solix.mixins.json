@@ -14,7 +14,8 @@
     "common.lightengine.ThreadedLevelLightEngineMixin",
     "common.world.ChunkSerializerMixin",
     "common.world.LevelMixin",
-    "common.world.ServerWorldMixin"
+    "common.world.ServerWorldMixin",
+    "compat.c2me.C2MEChunkDataSerializerMixin"
   ],
   "client": [
     "client.multiplayer.ClientPacketListenerMixin",
@@ -23,5 +24,5 @@
   "injectors": {
     "defaultRequire": 1
   },
-  "refmap": "starlight.refmap.json"
+  "refmap": "solix.refmap.json"
 }

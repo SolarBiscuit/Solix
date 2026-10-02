@@ -1,0 +1,13 @@
+Solix changelog
+===============
+
+0.1.0 (2026-10-02)
+- First version. Based on Starlight Forge 1.1.2 (PaperMC/Starlight forge branch, commit 1cda73c), built for
+  Minecraft 1.20.1 / Forge 47.4.16.
+- Rebranded to mod id "solix" (display name "Solix"); Java packages stay ca.spottedleaf.starlight so C2ME's
+  Starlight light-format support keeps working. The saved light format (starlight.light_version etc.) is unchanged,
+  so worlds can be moved between Starlight 1.1.2 and Solix.
+- Declares Starlight, ScalableLux and Lucis as incompatible (Forge refuses to load with them installed).
+- C2ME gc-free chunk serializer: report "starlight" as loaded so it keeps writing Starlight light data.
+- Fix: relightChunks sent light-update notifications for SectionPos(chunkX, y, chunkX) instead of chunkZ
+  (from ScalableLux c034543).

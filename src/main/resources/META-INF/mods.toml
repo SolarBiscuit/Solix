@@ -4,14 +4,13 @@ license = "${mod_license}"
 
 [[mods]]
  modId = "${mod_id}"
- version = "${version}"
+ version = "${mod_version}"
  displayName = "${mod_name}"
  authors = "${mod_authors}"
+ credits = "Starlight by Spottedleaf (LGPL-3.0-only). Parallel light scheduler from ScalableLux by RelativityMC/ishland (LGPL-3.0-only). Executor from FlowSched by RelativityMC (MIT). Forge 1.20.1 port and changes by SolarBiscuit."
  description = '''${mod_description}'''
- logoFile = "logo.png"
- displayURL = "https://www.curseforge.com/minecraft/mc-mods/starlight-forge"
 
- [[dependencies.${mod_id}]]
+[[dependencies.${mod_id}]]
   modId = "forge"
   mandatory = true
   versionRange = "${forge_version_range}"
@@ -22,5 +21,29 @@ license = "${mod_license}"
   modId = "minecraft"
   mandatory = true
   versionRange = "${minecraft_version_range}"
+  ordering = "NONE"
+  side = "BOTH"
+
+# Incompatible light engines. Forge 47 has no "incompatible" dependency type, so these are optional
+# dependencies whose version range matches nothing: if one of these mods is installed, Forge refuses to load.
+# Solix replaces all of them; remove the other light engine.
+[[dependencies.${mod_id}]]
+  modId = "starlight"
+  mandatory = false
+  versionRange = "(,0)"
+  ordering = "NONE"
+  side = "BOTH"
+
+[[dependencies.${mod_id}]]
+  modId = "scalablelux"
+  mandatory = false
+  versionRange = "(,0)"
+  ordering = "NONE"
+  side = "BOTH"
+
+[[dependencies.${mod_id}]]
+  modId = "lucis"
+  mandatory = false
+  versionRange = "(,0)"
   ordering = "NONE"
   side = "BOTH"

@@ -1,0 +1,19 @@
+Solix - a light engine for Minecraft Forge 1.20.1
+Copyright (C) Spottedleaf, RelativityMC (ScalableLux), SolarBiscuit
+
+Solix is licensed under the GNU Lesser General Public License, version 3 only (LGPL-3.0-only); see LICENSE.
+It is a modified version of, and contains code from, the following works:
+
+- Starlight (Forge branch, commit 1cda73c = Starlight Forge 1.1.2, plus later fixes from the forge branch)
+  by Spottedleaf. LGPL-3.0-only. https://github.com/PaperMC/Starlight
+  The Java packages ca.spottedleaf.starlight.* are kept unchanged for compatibility with mods that reflect on them.
+
+- ScalableLux (parallel light scheduler, getDebugSectionType / setLightEnabled fixes, positional-emission detection idea)
+  by RelativityMC / ishland. LGPL-3.0-only. https://github.com/RelativityMC/ScalableLux
+
+- FlowSched (task executor, vendored under ca.spottedleaf.starlight.interndep.flowsched)
+  by RelativityMC / ishland. MIT License; the full MIT notice is in LICENSE-FlowSched.txt.
+  https://github.com/RelativityMC/FlowSched
+
+Changes for Solix (Forge 1.20.1 port, rebrand, fixes and integration) by SolarBiscuit.
+See CHANGELOG.txt for the list of modifications.
