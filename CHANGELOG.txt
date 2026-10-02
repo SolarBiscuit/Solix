@@ -1,6 +1,13 @@
 Solix changelog
 ===============
 
+0.1.4 (2026-10-02)
+- LevelLightEngine.getDebugSectionType now reports LIGHT_AND_DATA for sections with light data (from ScalableLux
+  77b85a8). Starlight nulls vanilla's light engines, so this always returned EMPTY and Neo-Voxy skipped every chunk
+  in its ingest. Out-of-range section Y returns EMPTY instead of throwing.
+- setLightEnabled/lightOnInSection are implemented (from ScalableLux 1f1f5cf): the client's LevelRenderer only
+  rebuilds dirty sections where lightOnInSection is true. The set is synchronized.
+
 0.1.3 (2026-10-02)
 - Position-aware emission: also accept Quark's own Zeta forwarding override (org.violetmoon.* classes), not only
   Zeta's. With Quark + Zeta + Mekanism + Modular Routers loaded, 0.1.2 flagged 199 blocks; the extra ones were

@@ -304,6 +304,35 @@ public final class StarLightInterface {
         return this.blockReader;
     }
 
+    // Solix start - from ScalableLux 77b85a8: data for LevelLightEngine#getDebugSectionType (Voxy needs LIGHT_AND_DATA)
+    public boolean hasSectionSkyLight(final SectionPos sectionPos) {
+        if (!this.hasSkyLight) {
+            return false;
+        }
+        return hasSectionLight(sectionPos, true);
+    }
+
+    public boolean hasSectionBlockLight(final SectionPos sectionPos) {
+        if (!this.hasBlockLight) {
+            return false;
+        }
+        return hasSectionLight(sectionPos, false);
+    }
+
+    private boolean hasSectionLight(final SectionPos sectionPos, final boolean sky) {
+        final int index = sectionPos.y() - this.minLightSection;
+        if (sectionPos.y() < this.minLightSection || sectionPos.y() > this.maxLightSection) {
+            return false;
+        }
+        final ChunkAccess chunk = this.getAnyChunkNow(sectionPos.x(), sectionPos.z());
+        if (chunk == null) {
+            return false;
+        }
+        final SWMRNibbleArray[] nibbles = sky ? ((ExtendedChunk)chunk).getSkyNibbles() : ((ExtendedChunk)chunk).getBlockNibbles();
+        return nibbles != null && !nibbles[index].isNullNibbleVisible();
+    }
+    // Solix end
+
     public boolean isClientSide() {
         return this.isClientSide;
     }

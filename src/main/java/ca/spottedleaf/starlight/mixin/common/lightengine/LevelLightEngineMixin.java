@@ -8,6 +8,7 @@ import ca.spottedleaf.starlight.common.light.StarLightLightingProvider;
 import ca.spottedleaf.starlight.common.util.CoordinateUtils;
 import ca.spottedleaf.starlight.common.util.WorldUtil;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.ChunkPos;
@@ -18,6 +19,7 @@ import net.minecraft.world.level.chunk.DataLayer;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.LightChunkGetter;
 import net.minecraft.world.level.lighting.LayerLightEventListener;
+import net.minecraft.world.level.lighting.LayerLightSectionStorage;
 import net.minecraft.world.level.lighting.LevelLightEngine;
 import net.minecraft.world.level.lighting.LightEngine;
 import net.minecraft.world.level.lighting.LightEventListener;
@@ -115,8 +117,22 @@ public abstract class LevelLightEngineMixin implements LightEventListener, StarL
      */
     @Overwrite
     public void setLightEnabled(final ChunkPos pos, final boolean lightEnabled) {
-        // not invoked by the client
+        // not invoked by the client - Spottedleaf
+        // surely not - ishland
+        // Solix start - from ScalableLux 1f1f5cf: store state for lightOnInSection(), the client uses it to cull chunks
+        final long key = pos.toLong();
+        synchronized (this.solix$lightingEnabledChunks) {
+            if (lightEnabled) {
+                this.solix$lightingEnabledChunks.add(key);
+            } else {
+                this.solix$lightingEnabledChunks.remove(key);
+            }
+        }
+        // Solix end
     }
+
+    @Unique
+    protected final LongOpenHashSet solix$lightingEnabledChunks = new LongOpenHashSet();
 
     /**
      * @reason Avoid messing with the vanilla light engine state
@@ -156,6 +172,20 @@ public abstract class LevelLightEngineMixin implements LightEventListener, StarL
     }
 
     /**
+     * @reason Route to new light engine (vanilla's engines are null with Starlight, so this always returned EMPTY,
+     * which made Voxy skip every chunk). From ScalableLux 77b85a8.
+     * @author ishland
+     */
+    @Overwrite
+    public LayerLightSectionStorage.SectionType getDebugSectionType(final LightLayer lightLayer, final SectionPos sectionPos) {
+        if (lightLayer == LightLayer.BLOCK) {
+            return this.lightEngine.hasSectionBlockLight(sectionPos) ? LayerLightSectionStorage.SectionType.LIGHT_AND_DATA : LayerLightSectionStorage.SectionType.EMPTY;
+        } else {
+            return this.lightEngine.hasSectionSkyLight(sectionPos) ? LayerLightSectionStorage.SectionType.LIGHT_AND_DATA : LayerLightSectionStorage.SectionType.EMPTY;
+        }
+    }
+
+    /**
      * @reason Avoid messing with the vanilla light engine state
      * @author Spottedleaf
      */
@@ -181,7 +211,12 @@ public abstract class LevelLightEngineMixin implements LightEventListener, StarL
     @Overwrite
     public boolean lightOnInSection(final SectionPos pos) {
         final long key = CoordinateUtils.getChunkKey(pos.getX(), pos.getZ());
-        return (!this.lightEngine.hasBlockLight() || this.blockLightMap.get(key) != null) && (!this.lightEngine.hasSkyLight() || this.skyLightMap.get(key) != null);
+        // Solix - from ScalableLux 1f1f5cf: also true for chunks the client enabled light for
+        final boolean enabled;
+        synchronized (this.solix$lightingEnabledChunks) {
+            enabled = this.solix$lightingEnabledChunks.contains(key);
+        }
+        return enabled || (!this.lightEngine.hasBlockLight() || this.blockLightMap.get(key) != null) && (!this.lightEngine.hasSkyLight() || this.skyLightMap.get(key) != null);
     }
 
     @Unique
