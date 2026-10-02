@@ -1,6 +1,27 @@
 Solix changelog
 ===============
 
+0.1.3 (2026-10-02)
+- Position-aware emission: also accept Quark's own Zeta forwarding override (org.violetmoon.* classes), not only
+  Zeta's. With Quark + Zeta + Mekanism + Modular Routers loaded, 0.1.2 flagged 199 blocks; the extra ones were
+  Quark blocks whose getLightEmission only forwards to the default getLightEmissionZeta.
+
+0.1.2 (2026-10-02)
+- Forge-correct opacity cache. Starlight Forge 1.1.2 computed the cached light opacity and then always overwrote it
+  with -1, so every light step took the slow path. The cached value is now kept (vanilla's cache.lightBlock) except
+  for block states with a dynamic shape, conditionally full-opaque states, and blocks with position-aware light
+  emission. The field starts at -1, so states whose cache ModernFix has not built yet use the slow path.
+- Position-aware emission detection (idea from ScalableLux's NeoForge port): a block class counts as position-aware
+  when it overrides Forge's IForgeBlock#getLightEmission(BlockState, BlockGetter, BlockPos) (cached per class).
+  Zeta's forwarding override is ignored when getLightEmissionZeta is still the interface default. Forge's own
+  BlockPos.ZERO probe is not used, because some mods (e.g. Mekanism fluid tanks, Modular Routers camouflage) return
+  0 there.
+- isConditionallyFullOpaque is now read from the block state's final fields instead of a value cached in initCache,
+  so it is also correct before ModernFix builds a state's cache lazily.
+- Block light sources: sections whose palette has no state that can emit light are skipped instead of scanning all
+  4096 blocks (sections containing position-aware blocks are still scanned).
+- Debug: -Dsolix.debug.positionalEmission=true logs every block with position-aware emission at load complete.
+
 0.1.1 (2026-10-02)
 - Backported Starlight forge-branch fixes made after 1.1.2 (all apply to 1.20.1 unchanged except where noted):
   - 6585522: light queue methods return the per-chunk task object, so many block updates in one chunk in the same

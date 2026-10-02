@@ -1,6 +1,7 @@
 package ca.spottedleaf.starlight.common.light;
 
 import ca.spottedleaf.starlight.common.blockstate.ExtendedAbstractBlockState;
+import ca.spottedleaf.starlight.common.blockstate.PositionalEmission;
 import ca.spottedleaf.starlight.common.chunk.ExtendedChunk;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.Level;
@@ -205,6 +206,11 @@ public final class BlockStarLightEngine extends StarLightEngine {
         this.performLightDecrease(lightAccess);
     }
 
+    // Solix
+    private static boolean mayEmitLight(final BlockState state) {
+        return state.getLightEmission() != 0 || PositionalEmission.isPositionAware(state);
+    }
+
     protected List<BlockPos> getSources(final LightChunkGetter lightAccess, final ChunkAccess chunk) {
         final List<BlockPos> sources = new ArrayList<>();
 
@@ -218,6 +224,13 @@ public final class BlockStarLightEngine extends StarLightEngine {
                 // no sources in empty sections
                 continue;
             }
+            // Solix start - palette pre-check: skip sections that cannot contain a light source. A state can only emit
+            // light if its position-less emission is non-zero, or if its block overrides Forge's positional emission
+            // (then we cannot know without asking at the position, so scan the section as before).
+            if (!section.maybeHas(BlockStarLightEngine::mayEmitLight)) {
+                continue;
+            }
+            // Solix end - palette pre-check
             // Forge - need to check each state getLightEmission
             final PalettedContainer<BlockState> states = section.states;
             final int offY = sectionY << 4;

@@ -1352,6 +1352,8 @@ public abstract class StarLightEngine {
                                             | FLAG_RECHECK_LEVEL;
                             continue;
                         }
+                        // Solix - opacity is only cached (!= -1) for blocks without positional Forge emission
+                        // (see BlockStateBaseMixin), so the position-less emission is the real one here
                         final int emittedLight = blockState.getLightEmission() & emittedMask;
                         if (emittedLight != 0) {
                             // re-propagate source
@@ -1481,6 +1483,8 @@ public abstract class StarLightEngine {
                                             | FLAG_RECHECK_LEVEL;
                             continue;
                         }
+                        // Solix - opacity is only cached (!= -1) for blocks without positional Forge emission
+                        // (see BlockStateBaseMixin), so the position-less emission is the real one here
                         final int emittedLight = blockState.getLightEmission() & emittedMask;
                         if (emittedLight != 0) {
                             // re-propagate source
