@@ -1,3 +1,13 @@
+Fork of Starlight for that also backports features from ScalableLux Forge 1.20.1 (only NeoForge 1.21 supported for ScalableLux). A lot of bug fixes from later release of Starlight that were never fully ported to 1.20.1 are added as well as some new function (commits 6585522, 2084f46, 2b3204b, 4d59d86, and c4d051c are the ones of note).
+
+Configuration options to disable the parallelism for the light scheduler are added so it behaves more like "standard" Starlight. 
+
+Performance-wise, this should be perform as at least as well as Starlight, although I haven't formally benchmarked it 1:1 yet. 
+**
+Compatability:** Explicit compatability & testing done with C2ME (should be treated effectively like Starlight). Tested with 300+ Forge 1.20.1 mods. Also added in some exception checks with several popular mods, namely Quark. 
+
+Legacy Starlight Description
+
 Starlight (Forge)
 ==
 Forge mod for completely rewriting the vanilla light engine.
