@@ -1,5 +1,7 @@
 # User-specific stuff
 .idea/
+/branding
+branding
 
 *.iml
 *.ipr
