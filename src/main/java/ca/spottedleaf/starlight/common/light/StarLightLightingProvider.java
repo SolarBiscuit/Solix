@@ -13,6 +13,9 @@ public interface StarLightLightingProvider {
     public void clientUpdateLight(final LightLayer lightType, final SectionPos pos,
                                   final DataLayer nibble, final boolean trustEdges);
 
+    // Solix (0.3.3) - same, but takes ownership of the DataLayer's array (no copy); see SWMRNibbleArray#fromVanillaOwned
+    public void clientUpdateLightOwned(final LightLayer lightType, final SectionPos pos, final DataLayer nibble);
+
     public void clientRemoveLightData(final ChunkPos chunkPos);
 
     public void clientChunkLoad(final ChunkPos pos, final LevelChunk chunk);

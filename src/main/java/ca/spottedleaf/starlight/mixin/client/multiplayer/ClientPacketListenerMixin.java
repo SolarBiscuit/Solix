@@ -74,7 +74,8 @@ public abstract class ClientPacketListenerMixin implements ClientGamePacketListe
     )
     private void loadLightDataHook(final LevelLightEngine lightEngine, final LightLayer lightType, final SectionPos pos,
                                    final @Nullable DataLayer nibble) {
-        ((StarLightLightingProvider)this.level.getChunkSource().getLightEngine()).clientUpdateLight(lightType, pos, nibble, true);
+        // Solix (0.3.3) - readSectionList built this DataLayer from a fresh copy of the packet data: adopt it
+        ((StarLightLightingProvider)this.level.getChunkSource().getLightEngine()).clientUpdateLightOwned(lightType, pos, nibble);
     }
 
 
@@ -126,6 +127,9 @@ public abstract class ClientPacketListenerMixin implements ClientGamePacketListe
             // failed to load
             return;
         }
+        // Solix (0.3.3) - a chunk packet carries the chunk's complete light: drop light cached from earlier light-only
+        // packets for this chunk first, so sections the packet leaves out do not keep stale data
+        ((StarLightLightingProvider)this.level.getChunkSource().getLightEngine()).clientRemoveLightData(new ChunkPos(chunkX, chunkZ));
         // load in light data from packet immediately
         this.applyLightData(chunkX, chunkZ, clientboundLevelChunkWithLightPacket.getLightData());
         ((StarLightLightingProvider) this.level.getChunkSource().getLightEngine()).clientChunkLoad(new ChunkPos(chunkX, chunkZ), chunk);

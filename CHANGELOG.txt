@@ -1,6 +1,176 @@
 Solix changelog
 ===============
 
+0.3.7 (2026-11-04)
+Fixes from a full audit after the Age of Fate #149 deadlock (0.3.6).
+- A chunk's light ticket is now released even when lighting that chunk throws (a mod's light callback, for example).
+  Before, the ticket was only released on success, so a failure kept the chunk loaded and could make server stop wait
+  for it. The chunk stays marked as not lit and is relit on its next load.
+- 0.3.6's light view no longer calls LevelChunk#getBlockEntity, which promotes pending block entities (registering a
+  ticker with the level) and drops removed ones from the chunk's map, both only allowed on the server thread. It uses
+  Forge's existing-block-entity lookup and ignores removed block entities.
+- A block whose light code casts the BlockGetter it gets to Level (or ServerLevel/LevelReader) used to fail with a
+  ClassCastException on the light thread and lose that chunk's light update. The first failure per block class is now
+  logged and that class is given the real level from then on, like before 0.3.6; every other block keeps the safe view.
+- config/solix.toml: new safe_light_view = true (added to existing files on start). false hands every mod the real
+  level, as in 0.3.5.
+- If the light worker threads cannot be started (for example no native thread can be created), Solix switches to
+  serial lighting. Before, every scheduling pass failed again, the light work stayed queued and server stop waited for it.
+- Queuing light work now also asks for a scheduling pass (vanilla only did that while polling server tasks, which a
+  server that is permanently behind schedule skips). The throttle still applies.
+- Memory: finding a chunk's light sources no longer creates a list with one BlockPos per source, the sources are
+  queued while the chunk is scanned (same order, same light).
+
+0.3.6 (2026-11-04)
+Fix for Age of Fate #149 / Solix #2 (world load hangs for good with Ender IO machines, single player and dedicated server).
+- Server: mods' position-aware light callbacks (getLightEmission, getLightBlock, getFaceOcclusionShape) now get a
+  light-only view of the world instead of the ServerLevel. They run on a light worker thread (a Solix worker, or a
+  vanilla worker when lighting is serial: parallelism 1, which is the default below 8 CPU threads). Ender IO's machine
+  blocks read their own block entity from getLightEmission (Forge's getExistingBlockEntity, which it uses because the
+  mod id "starlight" is not loaded); on the real level that call queues the lookup on the server thread and waits for
+  it. When the server thread was itself waiting for a chunk whose light that worker was computing (getChunkBlocking),
+  neither could continue and the server stopped with the 180 s watchdog. The view reads the chunks the light engine
+  uses (never loads one, never waits for the server thread); a chunk that is not there reads as air without block
+  entity. It also removes a round trip to the server thread for every such callback.
+- The client light engine and fake/virtual levels are unchanged (they keep getting their own level).
+- Not Solix: ImprovableSkills' Accelerated Furnace skill calls Level#getBlockEntity on chunks that may not be loaded
+  from the player tick, which is what puts the server thread into getChunkBlocking in the dedicated server reports.
+
+0.3.5 (2026-11-01)
+- Dedicated server: checking whether a block's light emission depends on its position no longer loads client-only
+  classes. Class#getMethod resolved every public method signature of the block class, so blocks with a client type
+  in any of them (MineColonies' town hall: ClientLevel) logged a RuntimeDistCleaner error the first time one was
+  placed and were treated as position-aware (slower light path). The method is now resolved like the JVM links a
+  call, which only loads its own parameter types; same result as before on the client. Also covers block classes
+  whose signatures name a class from a missing optional mod.
+
+0.3.4 (2026-10-17)
+Fixes from a second code audit.
+- Serial lighting (parallel = false, parallelism = 1, or few CPU cores): server stopping/world close now also waits
+  for the light update being processed (0.3.2 only covered parallel workers).
+- Parallel scheduler: a light task can no longer be left unfinished. If handing a chunk to a worker fails (e.g. no
+  new thread could be created) the work stays queued (logged once); if a worker's error handling itself fails, its
+  task is still marked done. Before, either case kept "light work pending" set forever, so server stop waited
+  forever. A failure after a chunk's light work was already done no longer queues that work a second time.
+- Client: when the server re-sends a chunk the client already has, and the packet has no light at all for a layer
+  (e.g. an all-air chunk), the chunk's old light for that layer is replaced by empty light instead of kept.
+- Reverted 0.3.2's C2ME light version change. C2ME's fast chunk serializer also saves the light sections just below
+  and above the world incorrectly; with its version 8 Solix relights those chunks on load and repairs them, with
+  version 9 the broken sections were kept. Only relevant with C2ME's gcFreeChunkSerializer, which RatPack keeps off.
+- Targeted darkening: a block reporting more light blocking than 15 (possible with mods) no longer overflows into
+  the neighbouring field of the queue entry.
+- config/solix.toml:
+  - a file that is not valid UTF-8 (e.g. an accented comment saved by an ANSI editor) no longer drops every setting
+    back to its default;
+  - a UTF-8 byte order mark, quoted keys and single-quoted values are understood, and a # inside a quoted value is
+    kept;
+  - if adding the propagation setting to an existing file fails (read-only file), the warning says so; the other
+    settings were read and are used (the old message claimed defaults were used);
+  - the added block uses the file's own line endings;
+  - parallelism above the number of CPU threads is lowered to it (huge values would start that many threads).
+- mods.toml now only accepts Minecraft 1.20.1 and Forge 47 (it accepted 1.20.2-1.20.6 and Forge 48+, where Solix
+  would crash).
+- Removed dead code (commented out): ExtendedAbstractBlockState#isPositionAwareEmission and its per-block-state field
+  (nothing read them), an unused 4 KB array in every sky light engine, unused imports. Public Starlight API that
+  Solix itself does not call (relightChunks, loadInChunk, removeChunkTasks, edge check queueing) is kept on purpose.
+- Fixed the queue entry layout comment (13 unused bits, 5 flag bits).
+
+0.3.3 (2026-10-12)
+- Parallel scheduler: the main thread's "is there light work?" check (run for every task it polls) no longer takes
+  the light queue lock, and a scheduling pass only holds that lock to copy the queued chunk keys instead of for the
+  whole pass. Less main thread waiting during chunk generation and pre-generation.
+- The server always sends the light of sections that contain a changed block again. Since 0.3.0 sections whose
+  light ended up unchanged are not sent; before that, the changed block's section was always re-sent, which also
+  corrected a client whose own light calculation for the change differed (e.g. at the edge of its view distance).
+  Unchanged sections elsewhere are still not sent.
+- Serial lighting (parallel = false, parallelism = 1, or few CPU cores): a light update that throws no longer stops
+  that dimension's light updates for good (vanilla only re-arms its light scheduling after a successful run) and no
+  longer keeps the chunk loaded; the chunk's updates are retried once and then dropped and logged, like the parallel
+  path since 0.3.2.
+- Light readers and light engines now make the same client/server decision, so mod levels that are neither a
+  server level nor client side (some fake or virtual levels) are lit instead of silently ignored.
+- A pure client no longer initialises the parallel scheduler (it only logged a misleading "worker threads" line).
+- Memory: the per-thread pool of spare light arrays is capped at 128 (256 KB), and light queues grown by one huge
+  update are shrunk back afterwards instead of being kept for the world's lifetime.
+- Client: a chunk packet replaces light cached from earlier light-only packets for that chunk, so sections the
+  packet leaves out cannot keep stale data. Light from packets is no longer copied twice (2 KB per section).
+- Chunk lighting: the light source scan uses the block state's emission field for blocks without position-dependent
+  emission instead of Forge's positional call for every block of a candidate section.
+
+0.3.2 (2026-10-12)
+Fixes from a full code audit.
+- getDebugSectionType no longer reports light data (LIGHT_AND_DATA) for sections whose data getDataLayerData does
+  not return: hidden block light sections, and sky light of chunks that are not lit yet. A mod trusting the type
+  (e.g. Voxy-style ingest) could get null data.
+- Server stop and world close now wait for light updates that a parallel light worker has started but not
+  finished. Before, vanilla's "any work left?" check only saw the queue, so a save could catch an update halfway.
+- If a parallel light worker fails, its chunk's light updates are retried once (merged into newer work for the
+  chunk) instead of being dropped; if the retry fails too they are dropped and logged, as before.
+- A light worker finishes its chunk before asking for the next scheduling pass, so work queued for that chunk in
+  the meantime is not skipped until the next pass.
+- C2ME's fast chunk serializer (ioSystem.gcFreeChunkSerializer, off in RatPack) wrote light version 8, which Solix
+  treats as outdated, so every chunk it saved was relit on load. It now writes Solix's version (same data format).
+- Client: chunks the server tells the client to forget are also removed from the "light enabled" set (it only grew
+  until the world was closed).
+- World generation: brightness queries outside the generation region return 0 instead of throwing.
+- Fake or virtual levels without a chunk source, and light engines created without a chunk getter, no longer
+  cause a NullPointerException.
+- mods.toml credits FlowSched to ishland (per its licence).
+
+0.3.1 (2026-10-10)
+- Faster light section bookkeeping: deciding which light sections must exist around a chunk checked up to 27
+  neighbouring sections one by one for every light section of 9 chunks. It now builds one bitmask of non-empty
+  sections per chunk column and answers each check with a few bit operations. This ran for every chunk lit on the
+  server (5-10% of light worker time in profiles, no longer visible after the change) and on the client's render
+  thread for every chunk received. Same decisions as before (checked against the old search for every call in a
+  test build; saved light identical to 0.2.2/0.3.0); worlds with more than 63 light sections keep the old check.
+- Evaluated and not adopted: Vector API / FFM (Minecraft 1.20.1 runs on Java 17, where the Vector API needs extra
+  launch flags and FFM does not exist; the light loop is a sparse search bound by block reads); @Stable and
+  block-state-id emission tables (opacity and emission are already single field reads, KubeJS changes emission at
+  runtime); delaying or batching light packets (already sent once per tick per chunk, unchanged sections are no
+  longer sent since 0.3.0, a custom channel would break vanilla clients and mods reading light packets);
+  snapshot-and-commit worker threads (light spills across chunk borders, overlapping writes would be lost; workers
+  are mostly idle); heightmap gating (block light never travels more than 15 blocks and sky setup already stops at
+  the first opaque block). Rendering techniques (multi-draw indirect, ray-traced GI, shadow maps) belong to the
+  renderer and shader mods, not the light engine.
+
+0.3.0 (2026-10-08)
+(+0.1.0: this change adds/removes more than 500 lines, mostly the reworked light queues and decrease.)
+- Brightest-first light queues (Dial's algorithm): the increase and decrease queues are split into 16 buckets by
+  light level and processed from 15 down. A block is now lit once at its final level, instead of being lit by a
+  weaker source first and overwritten by a stronger one (mixed-level sources in chunk lighting, re-lighting after
+  a block change).
+- Targeted darkness: when light is removed or blocked, Starlight darkened every block whose level could have come
+  from the changed block and then re-lit the whole area from its border. Placing a block in a lit room did this
+  for the entire region behind it, although almost every block there is also lit along another path of the same
+  length. Such blocks are now only queued as candidates and darkened when neither their own emission nor any
+  face-open neighbour still provides their level. The source of a block's light is not stored anywhere (no extra
+  memory, no save format change); it follows from the light values themselves.
+  Below a removed light source (a changed block without a brighter neighbour, or a removed sky column) nearly
+  everything loses its light, so the classic darkening is kept there; the checks would only cost time.
+- Sections whose light ends up byte-identical after an update (darkened and re-lit within the same update) are no
+  longer reported as changed. The server then skips the light packet and the chunk's unsaved mark for them, and
+  clients skip re-meshing those sections and their neighbours.
+- A source block's light is never lowered when it is restored after a decrease if a brighter neighbour has
+  already lit it.
+- Queued light work left behind by an update that threw is cleared, so a pooled light engine cannot replay it.
+- New config key in config/solix.toml: propagation = targeted (default) | ordered | classic.
+  ordered = brightest-first queues only, classic = Starlight's original FIFO propagation (fallback if you suspect
+  a lighting bug). It is added with its documentation to existing config files on first start.
+- Debug: -Dsolix.debug.lightStats=true logs light engine counters every 10 s, separately for server and client
+  (update counts and times, queue pops, candidates kept/darkened, light writes, sections reported/unchanged).
+- Tested on a dedicated server with C2ME + ModernFix (1 and 4 light workers): saved light after relighting a world
+  and applying block edits is identical to 0.2.2 in every mode. Single stone blocks placed/removed in a lit room:
+  14-20% less light time, 47% fewer light writes than classic; big /fill and glowstone add/remove batches do the
+  same work as classic (ordered: 6-9% fewer writes). Depending on the edits, 10-40% of the sections an update
+  touched ended unchanged and are no longer re-sent to clients.
+- Not adopted, after evaluation: storing a per-block pointer to the brightest neighbour (needs ~1.5-2 KB more per
+  light section and layer, is not in the save format, and goes stale whenever light is loaded or received instead
+  of propagated; the targeted darkness above gets the same benefit without it); spreading darkness over several
+  ticks (server light already runs off the main thread, and a half-finished decrease leaves inconsistent light
+  that later updates and saves would pick up); SWAR-packed nibble arithmetic (light updates touch a sparse set of
+  blocks, so dense 16-lane passes do more work, and Forge's positional opacity and face shapes cannot be packed).
+
 0.2.2 (2026-10-02)
 - Parallel scheduler priority by distance (idea from Lucis): each chunk's light task gets the chunk's vanilla queue
   level (ChunkMap#getChunkQueueLevel, lower = closer to a player / higher ticket) as its FlowSched priority instead

@@ -70,6 +70,7 @@ public abstract class ThreadedLevelLightEngineMixin extends LevelLightEngine imp
             // do not keep chunk loaded, we are probably in a gen thread
             // if we proceed to add a ticket the chunk will be loaded, which is not what we want (avoid cascading gen)
             runnable.get();
+            this.tryScheduleUpdate(); // Solix (0.3.7) - see below
             return;
         }
 
@@ -84,6 +85,10 @@ public abstract class ThreadedLevelLightEngineMixin extends LevelLightEngine imp
         final long key = CoordinateUtils.getChunkKey(chunkX, chunkZ);
 
         final StarLightInterface.LightQueue.ChunkTasks updateFuture = runnable.get();
+
+        // Solix (0.3.7) - ask for a scheduling pass now that work is queued. Vanilla only did this from ServerChunkCache's
+        // task polling, which a server that is behind schedule skips (the throttle still applies; this is a mailbox tell)
+        this.tryScheduleUpdate();
 
         if (updateFuture == null) {
             // not scheduled
@@ -206,20 +211,26 @@ public abstract class ThreadedLevelLightEngineMixin extends LevelLightEngine imp
         final ChunkPos chunkPos = chunk.getPos();
 
         return CompletableFuture.supplyAsync(() -> {
-            final Boolean[] emptySections = StarLightEngine.getEmptySectionsForChunk(chunk);
-            if (!lit) {
-                chunk.setLightCorrect(false);
-                this.getLightEngine().lightChunk(chunk, emptySections);
-                chunk.setLightCorrect(true);
-            } else {
-                this.getLightEngine().forceLoadInChunk(chunk, emptySections);
-                // can't really force the chunk to be edged checked, as we need neighbouring chunks - but we don't have
-                // them, so if it's not loaded then i guess we can't do edge checks. later loads of the chunk should
-                // catch what we miss here.
-                this.getLightEngine().checkChunkEdges(chunkPos.x, chunkPos.z);
+            // Solix (0.3.7) - the light ticket is released even when lighting throws (e.g. a mod's light callback).
+            // Before, a failure kept the ticket for good: the chunk stayed loaded and server stop could wait for it.
+            // A failed chunk stays marked as not lit (the flag is only set after the light was computed), so it is
+            // relit the next time it is loaded.
+            try {
+                final Boolean[] emptySections = StarLightEngine.getEmptySectionsForChunk(chunk);
+                if (!lit) {
+                    chunk.setLightCorrect(false);
+                    this.getLightEngine().lightChunk(chunk, emptySections);
+                    chunk.setLightCorrect(true);
+                } else {
+                    this.getLightEngine().forceLoadInChunk(chunk, emptySections);
+                    // can't really force the chunk to be edged checked, as we need neighbouring chunks - but we don't have
+                    // them, so if it's not loaded then i guess we can't do edge checks. later loads of the chunk should
+                    // catch what we miss here.
+                    this.getLightEngine().checkChunkEdges(chunkPos.x, chunkPos.z);
+                }
+            } finally {
+                this.chunkMap.releaseLightTicket(chunkPos);
             }
-
-            this.chunkMap.releaseLightTicket(chunkPos);
             return chunk;
         }, (runnable) -> {
             this.getLightEngine().scheduleChunkLight(chunkPos, runnable);
@@ -254,7 +265,7 @@ public abstract class ThreadedLevelLightEngineMixin extends LevelLightEngine imp
         if (!engine.hasUpdates()) {
             return false;
         }
-        if (!GlobalExecutors.ENABLED || engine.isQueueDirty()) {
+        if (!GlobalExecutors.ENABLED || StarLightInterface.isParallelBroken() || engine.isQueueDirty()) {
             return true;
         }
         final long throttle = SolixConfig.THROTTLE_NANOS;

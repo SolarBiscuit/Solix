@@ -8,11 +8,10 @@ import ca.spottedleaf.starlight.common.util.WorldUtil;
 import ca.spottedleaf.starlight.common.world.ExtendedWorld;
 import com.mojang.logging.LogUtils;
 import it.unimi.dsi.fastutil.longs.Long2ObjectLinkedOpenHashMap;
-import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
+import it.unimi.dsi.fastutil.longs.LongArrayList;
 import it.unimi.dsi.fastutil.longs.Long2ReferenceMap;
 import it.unimi.dsi.fastutil.longs.Long2ReferenceMaps;
 import it.unimi.dsi.fastutil.longs.Long2ReferenceOpenHashMap;
-import it.unimi.dsi.fastutil.objects.ObjectBidirectionalIterator;
 import it.unimi.dsi.fastutil.shorts.ShortCollection;
 import it.unimi.dsi.fastutil.shorts.ShortOpenHashSet;
 import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet;
@@ -34,6 +33,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import java.util.function.Consumer;
@@ -341,8 +341,14 @@ public final class StarLightInterface {
         if (chunk == null) {
             return false;
         }
+        // Solix (0.3.2) - only report data when getDataLayerData would return it: the readers return null for hidden
+        // nibbles, and the sky reader also for chunks that are not lit yet or have no emptiness map
+        if (sky && ((!this.isClientSide && !chunk.isLightCorrect()) || !chunk.getStatus().isOrAfter(ChunkStatus.LIGHT)
+                || ((ExtendedChunk)chunk).getSkyEmptinessMap() == null)) {
+            return false;
+        }
         final SWMRNibbleArray[] nibbles = sky ? ((ExtendedChunk)chunk).getSkyNibbles() : ((ExtendedChunk)chunk).getBlockNibbles();
-        return nibbles != null && !nibbles[index].isNullNibbleVisible();
+        return nibbles != null && !nibbles[index].isNullNibbleVisible() && !nibbles[index].isHiddenVisible();
     }
     // Solix end
 
@@ -359,7 +365,10 @@ public final class StarLightInterface {
     }
 
     public boolean hasUpdates() {
-        return !this.lightQueue.isEmpty();
+        // Solix (0.3.2) - also count work a parallel light worker has taken off the queue but not finished, so that
+        // ChunkMap#hasWork (server stop, world close) waits for it instead of saving chunks mid-update
+        // (0.3.3: both checks are lock-free, the main thread calls this for every task it polls)
+        return !this.lightQueue.isEmpty() || this.inFlightTasks.get() != 0;
     }
 
     public Level getWorld() {
@@ -380,7 +389,7 @@ public final class StarLightInterface {
         }
 
         if (ret == null) {
-            return new SkyStarLightEngine(this.world);
+            return new SkyStarLightEngine(this.world, this.isClientSide, this.lightAccess); // Solix (0.3.3) - one client/server decision
         }
         return ret;
     }
@@ -404,7 +413,7 @@ public final class StarLightInterface {
         }
 
         if (ret == null) {
-            return new BlockStarLightEngine(this.world);
+            return new BlockStarLightEngine(this.world, this.isClientSide, this.lightAccess); // Solix (0.3.3)
         }
         return ret;
     }
@@ -451,6 +460,7 @@ public final class StarLightInterface {
         }
     }
 
+    // Solix (0.3.4) - not called by Solix or any RatPack mod, but kept: Starlight API in Starlight's packages that other mods may call
     public void loadInChunk(final int chunkX, final int chunkZ, final Boolean[] emptySections) {
         final SkyStarLightEngine skyEngine = this.getSkyLightEngine();
         final BlockStarLightEngine blockEngine = this.getBlockLightEngine();
@@ -485,6 +495,7 @@ public final class StarLightInterface {
         }
     }
 
+    // Solix (0.3.4) - not called by Solix or any RatPack mod, but kept: Starlight API in Starlight's packages that other mods may call
     public void relightChunks(final Set<ChunkPos> chunks, final Consumer<ChunkPos> chunkLightCallback,
                               final IntConsumer onComplete) {
         final SkyStarLightEngine skyEngine = this.getSkyLightEngine();
@@ -559,6 +570,7 @@ public final class StarLightInterface {
         this.lightQueue.queueChunkLighting(pos, run);
     }
 
+    // Solix (0.3.4) - not called by Solix or any RatPack mod, but kept: Starlight API in Starlight's packages that other mods may call
     public void removeChunkTasks(final ChunkPos pos) {
         this.lightQueue.removeChunk(pos);
     }
@@ -569,7 +581,8 @@ public final class StarLightInterface {
         }
 
         // Solix start - ScalableLux parallel scheduler (server only; the client keeps the synchronous path)
-        if (GlobalExecutors.ENABLED && this.lightEngine instanceof ThreadedLevelLightEngine threadedLevelLightEngine) {
+        // (0.3.3: check the engine type first, so a pure client never initialises GlobalExecutors)
+        if (this.lightEngine instanceof ThreadedLevelLightEngine threadedLevelLightEngine && GlobalExecutors.ENABLED && !parallelBroken) {
             this.schedulePropagation0(threadedLevelLightEngine);
             return;
         }
@@ -579,9 +592,29 @@ public final class StarLightInterface {
         final BlockStarLightEngine blockEngine = this.getBlockLightEngine();
 
         try {
-            LightQueue.ChunkTasks task;
-            while ((task = this.lightQueue.removeFirstTask()) != null) {
-                this.handleUpdateInternal(task, skyEngine, blockEngine);
+            for (;;) {
+                // Solix (0.3.4) - count the task as in flight from before it leaves the queue until it is done, so
+                // hasUpdates (server stop, world close) stays true while the last task is still being processed
+                this.inFlightTasks.incrementAndGet();
+                try {
+                    final LightQueue.ChunkTasks task = this.lightQueue.removeFirstTask();
+                    if (task == null) {
+                        break;
+                    }
+                    // Solix start (0.3.3) - an exception escaping here would stop vanilla from ever scheduling light
+                    // updates for this dimension again (its "scheduled" flag is only reset after a successful run) and
+                    // keep the chunk work ticket; retry the chunk once like the parallel path, then drop it
+                    try {
+                        this.handleUpdateInternal(task, skyEngine, blockEngine);
+                    } catch (final Throwable thr) {
+                        LOGGER.error("Solix: failed to process light updates for chunk ("
+                                + CoordinateUtils.getChunkX(task.chunkCoordinate) + "," + CoordinateUtils.getChunkZ(task.chunkCoordinate) + ")", thr);
+                        this.requeueFailedTasks(task);
+                    }
+                    // Solix end
+                } finally {
+                    this.inFlightTasks.decrementAndGet();
+                }
             }
         } finally {
             this.releaseSkyLightEngine(skyEngine);
@@ -591,9 +624,21 @@ public final class StarLightInterface {
 
     // Solix start - ScalableLux parallel scheduler (patch 0006 + 0db04dc), adapted to Solix/Forge 1.20.1
     private static final AtomicInteger INSTANCE_COUNTER = new AtomicInteger(0);
+    private static final AtomicBoolean SCHEDULE_FAILURE_LOGGED = new AtomicBoolean(); // Solix (0.3.4)
+    // Solix (0.3.7) - set when the worker threads cannot be started; light then runs on the serial path for good
+    private static volatile boolean parallelBroken;
+
+    public static boolean isParallelBroken() {
+        return parallelBroken;
+    }
     private static final CompletableFuture<Void> COMPLETED_FUTURE = CompletableFuture.completedFuture(null);
     private final int instanceId = INSTANCE_COUNTER.getAndIncrement();
     private final Long2ReferenceMap<CompletableFuture<Void>> chunkFutures = Long2ReferenceMaps.synchronize(new Long2ReferenceOpenHashMap<>());
+    // Solix (0.3.3) - scheduling passes are serial; their candidate list is reused
+    private final Object scheduleLock = new Object();
+    private final LongArrayList scheduleCandidates = new LongArrayList();
+    // Solix (0.3.3) - worker tasks scheduled and not finished, read without locking by hasUpdates
+    private final AtomicInteger inFlightTasks = new AtomicInteger();
 
     /**
      * Runs on the light thread: schedules one worker task per chunk that has queued light work and no task in flight.
@@ -601,56 +646,90 @@ public final class StarLightInterface {
      * the chunk's queued work at run time and processes it like the serial path.
      */
     private void schedulePropagation0(final ThreadedLevelLightEngine threadedLevelLightEngine) {
-        synchronized (this.lightQueue) {
-            final ObjectBidirectionalIterator<Long2ObjectMap.Entry<LightQueue.ChunkTasks>> iterator = this.lightQueue.chunkTasks.long2ObjectEntrySet().fastIterator();
-            while (iterator.hasNext()) {
-                final Long2ObjectMap.Entry<LightQueue.ChunkTasks> entry = iterator.next();
-                final long pos = entry.getLongKey();
+        // Solix (0.3.3) - only copy the queued chunk keys under the queue lock (the main thread checks the queue on
+        // every task it polls) and schedule outside of it; scheduling passes themselves stay serial
+        synchronized (this.scheduleLock) {
+            final LongArrayList candidates = this.scheduleCandidates;
+            candidates.clear();
+            this.lightQueue.copyChunkKeys(candidates);
+            for (int i = 0, len = candidates.size(); i < len; ++i) {
+                final long pos = candidates.getLong(i);
                 if (!this.chunkFutures.getOrDefault(pos, COMPLETED_FUTURE).isDone()) {
                     continue;
                 }
                 final CompletableFuture<Void> future = new CompletableFuture<>();
-                SchedulingUtil.scheduleTask(
-                        this.instanceId,
-                        () -> {
-                            LightQueue.ChunkTasks tasks = null;
-                            try {
-                                synchronized (this.lightQueue) {
-                                    tasks = this.lightQueue.chunkTasks.remove(pos);
-                                }
-                                if (tasks != null) {
-                                    final SkyStarLightEngine skyEngine = this.getSkyLightEngine();
-                                    final BlockStarLightEngine blockEngine = this.getBlockLightEngine();
-                                    try {
-                                        this.handleUpdateInternal(tasks, skyEngine, blockEngine);
-                                    } finally {
-                                        this.releaseSkyLightEngine(skyEngine);
-                                        this.releaseBlockLightEngine(blockEngine);
+                this.inFlightTasks.incrementAndGet(); // Solix (0.3.3) - counted until the future completes
+                try { // Solix (0.3.4)
+                    SchedulingUtil.scheduleTask(
+                            this.instanceId,
+                            () -> {
+                                LightQueue.ChunkTasks tasks = null;
+                                boolean processed = false; // Solix (0.3.4)
+                                try {
+                                    tasks = this.lightQueue.removeTasks(pos);
+                                    if (tasks != null) {
+                                        final SkyStarLightEngine skyEngine = this.getSkyLightEngine();
+                                        final BlockStarLightEngine blockEngine = this.getBlockLightEngine();
+                                        try {
+                                            this.handleUpdateInternal(tasks, skyEngine, blockEngine);
+                                        } finally {
+                                            this.releaseSkyLightEngine(skyEngine);
+                                            this.releaseBlockLightEngine(blockEngine);
+                                        }
                                     }
-
-                                    threadedLevelLightEngine.tryScheduleUpdate();
+                                    processed = true;
+                                    // Solix (0.3.2) - finish this chunk's future before asking for the next scheduling
+                                    // pass, otherwise that pass can skip work queued for this chunk meanwhile
+                                    future.complete(null);
+                                    if (tasks != null) {
+                                        threadedLevelLightEngine.tryScheduleUpdate();
+                                    }
+                                } catch (final Throwable thr) {
+                                    LOGGER.error("Solix: failed to process light updates for chunk ("
+                                            + CoordinateUtils.getChunkX(pos) + "," + CoordinateUtils.getChunkZ(pos) + ")", thr);
+                                    // Solix (0.3.2) - retry the chunk's work once instead of dropping its block changes;
+                                    // the chunk work ticket is released when it is finally done or given up
+                                    // (0.3.4: not when the work itself already finished and only the reschedule threw)
+                                    final boolean requeued = !processed && tasks != null && this.requeueFailedTasks(tasks);
+                                    future.completeExceptionally(thr);
+                                    if (requeued) {
+                                        threadedLevelLightEngine.tryScheduleUpdate();
+                                    }
+                                } finally {
+                                    // Solix (0.3.4) - never leave the future open (e.g. if the error handling itself
+                                    // throws): an open future keeps hasUpdates true, so server stop would wait forever,
+                                    // and the chunk would never be scheduled again
+                                    if (!future.isDone()) {
+                                        future.completeExceptionally(new IllegalStateException("Solix: light task for chunk ("
+                                                + CoordinateUtils.getChunkX(pos) + "," + CoordinateUtils.getChunkZ(pos) + ") did not complete"));
+                                    }
                                 }
-                                future.complete(null);
-                            } catch (final Throwable thr) {
-                                LOGGER.error("Solix: failed to process light updates for chunk ("
-                                        + CoordinateUtils.getChunkX(pos) + "," + CoordinateUtils.getChunkZ(pos) + ")", thr);
-                                if (tasks != null) {
-                                    // do not leak the chunk work ticket
-                                    tasks.onComplete.complete(null);
-                                }
-                                future.completeExceptionally(thr);
-                            }
-                        },
-                        CoordinateUtils.getChunkX(pos),
-                        CoordinateUtils.getChunkZ(pos),
-                        2,
-                        this.getSchedulingPriority(pos)
-                );
+                            },
+                            CoordinateUtils.getChunkX(pos),
+                            CoordinateUtils.getChunkZ(pos),
+                            2,
+                            this.getSchedulingPriority(pos)
+                    );
+                } catch (final Throwable thr) {
+                    // Solix (0.3.4) - the chunk could not be handed to a worker (e.g. no new thread could be created):
+                    // undo the in-flight count, keep its work queued for the next pass and end this pass
+                    this.inFlightTasks.decrementAndGet();
+                    this.lightQueue.queueDirty = true;
+                    // Solix (0.3.7) - a failing pool (e.g. no native thread can be created, or it never initialised) would fail
+                    // every pass again and leave the work queued forever (server stop waits for it): use the serial path
+                    parallelBroken = true;
+                    if (!SCHEDULE_FAILURE_LOGGED.getAndSet(true)) {
+                        LOGGER.error("Solix: could not schedule light work on the light workers, switching to serial lighting (logged once)", thr);
+                    }
+                    return;
+                }
                 this.chunkFutures.put(pos, future);
                 // ScalableLux 0db04dc: remove finished futures, otherwise the map grows with every chunk ever lit
-                future.whenComplete((final Void unused, final Throwable throwable) -> this.chunkFutures.remove(pos, future));
+                future.whenComplete((final Void unused, final Throwable throwable) -> {
+                    this.chunkFutures.remove(pos, future);
+                    this.inFlightTasks.decrementAndGet(); // Solix (0.3.3)
+                });
             }
-            this.lightQueue.queueDirty = false;
         }
     }
 
@@ -677,9 +756,31 @@ public final class StarLightInterface {
         return this.lightQueue.queueDirty;
     }
 
+    /**
+     * Solix (0.3.2): puts the work of a worker task that threw back into the queue, once. Block changes are merged
+     * into work queued for the chunk since (newer section changes win). Returns false and releases the chunk work
+     * ticket when the work already failed before.
+     */
+    private boolean requeueFailedTasks(final LightQueue.ChunkTasks failed) {
+        if (failed.failures++ > 0) {
+            LOGGER.error("Solix: light updates for chunk (" + CoordinateUtils.getChunkX(failed.chunkCoordinate) + ","
+                    + CoordinateUtils.getChunkZ(failed.chunkCoordinate) + ") failed again, dropping them");
+            failed.onComplete.complete(null);
+            return false;
+        }
+        // when nothing is queued for the chunk, the failed task goes back with its own chunk work ticket
+        if (this.lightQueue.putBackOrMerge(failed)) {
+            // the queued task holds its own ticket
+            failed.onComplete.complete(null);
+        }
+        return true;
+    }
+
     private void handleUpdateInternal(final LightQueue.ChunkTasks task, final SkyStarLightEngine skyEngine, final BlockStarLightEngine blockEngine) {
         if (task.lightTasks != null) {
-            for (final Runnable run : task.lightTasks) {
+            final List<Runnable> lightTasks = task.lightTasks;
+            task.lightTasks = null; // Solix - a retried task must not run them again
+            for (final Runnable run : lightTasks) {
                 run.run();
             }
         }
@@ -714,24 +815,63 @@ public final class StarLightInterface {
         protected final Long2ObjectLinkedOpenHashMap<ChunkTasks> chunkTasks = new Long2ObjectLinkedOpenHashMap<>();
         protected final StarLightInterface manager;
         protected volatile boolean queueDirty = false; // Solix - ScalableLux scheduler
+        // Solix (0.3.3) - chunkTasks.size(), updated under the lock by every change so isEmpty() needs no lock
+        private volatile int size;
 
         public LightQueue(final StarLightInterface manager) {
             this.manager = manager;
         }
 
-        public synchronized boolean isEmpty() {
-            return this.chunkTasks.isEmpty();
+        public boolean isEmpty() {
+            return this.size == 0; // Solix (0.3.3) - lock-free, see size
         }
 
+        // Solix start (0.3.3)
+        private ChunkTasks getOrCreate(final long chunkKey) {
+            final ChunkTasks tasks = this.chunkTasks.computeIfAbsent(chunkKey, ChunkTasks::new);
+            this.size = this.chunkTasks.size();
+            return tasks;
+        }
+
+        /** Removes the queued work of a chunk (a worker task taking it), null when nothing is queued. */
+        public synchronized ChunkTasks removeTasks(final long chunkKey) {
+            final ChunkTasks tasks = this.chunkTasks.remove(chunkKey);
+            this.size = this.chunkTasks.size();
+            return tasks;
+        }
+
+        /** Adds the keys of all chunks with queued work to the list and clears the dirty flag. */
+        public synchronized void copyChunkKeys(final LongArrayList into) {
+            into.addAll(this.chunkTasks.keySet());
+            this.queueDirty = false;
+        }
+
+        /**
+         * Puts the work of a failed worker task back: as is when nothing is queued for the chunk, otherwise merged into
+         * the queued (newer) work. Returns true when it was merged, the failed task's ticket can then be released.
+         */
+        public synchronized boolean putBackOrMerge(final ChunkTasks failed) {
+            final ChunkTasks queued = this.chunkTasks.get(failed.chunkCoordinate);
+            if (queued == null) {
+                this.chunkTasks.put(failed.chunkCoordinate, failed);
+            } else {
+                queued.mergeOlder(failed);
+            }
+            this.size = this.chunkTasks.size();
+            this.queueDirty = true;
+            return queued != null;
+        }
+        // Solix end (0.3.3)
+
         public synchronized LightQueue.ChunkTasks queueBlockChange(final BlockPos pos) {
-            final ChunkTasks tasks = this.chunkTasks.computeIfAbsent(CoordinateUtils.getChunkKey(pos), ChunkTasks::new);
+            final ChunkTasks tasks = this.getOrCreate(CoordinateUtils.getChunkKey(pos)); // Solix (0.3.3) - keeps size current
             tasks.changedPositions.add(pos.immutable());
             this.queueDirty = true; // Solix
             return tasks;
         }
 
         public synchronized LightQueue.ChunkTasks queueSectionChange(final SectionPos pos, final boolean newEmptyValue) {
-            final ChunkTasks tasks = this.chunkTasks.computeIfAbsent(CoordinateUtils.getChunkKey(pos), ChunkTasks::new);
+            final ChunkTasks tasks = this.getOrCreate(CoordinateUtils.getChunkKey(pos)); // Solix (0.3.3) - keeps size current
 
             if (tasks.changedSectionSet == null) {
                 tasks.changedSectionSet = new Boolean[this.manager.maxSection - this.manager.minSection + 1];
@@ -743,7 +883,7 @@ public final class StarLightInterface {
         }
 
         public synchronized LightQueue.ChunkTasks queueChunkLighting(final ChunkPos pos, final Runnable lightTask) {
-            final ChunkTasks tasks = this.chunkTasks.computeIfAbsent(CoordinateUtils.getChunkKey(pos), ChunkTasks::new);
+            final ChunkTasks tasks = this.getOrCreate(CoordinateUtils.getChunkKey(pos)); // Solix (0.3.3) - keeps size current
             if (tasks.lightTasks == null) {
                 tasks.lightTasks = new ArrayList<>();
             }
@@ -753,8 +893,9 @@ public final class StarLightInterface {
             return tasks;
         }
 
+        // Solix (0.3.4) - not called by Solix or any RatPack mod, but kept: Starlight API that other mods may call
         public synchronized LightQueue.ChunkTasks queueChunkSkylightEdgeCheck(final SectionPos pos, final ShortCollection sections) {
-            final ChunkTasks tasks = this.chunkTasks.computeIfAbsent(CoordinateUtils.getChunkKey(pos), ChunkTasks::new);
+            final ChunkTasks tasks = this.getOrCreate(CoordinateUtils.getChunkKey(pos)); // Solix (0.3.3) - keeps size current
 
             ShortOpenHashSet queuedEdges = tasks.queuedEdgeChecksSky;
             if (queuedEdges == null) {
@@ -766,8 +907,9 @@ public final class StarLightInterface {
             return tasks;
         }
 
+        // Solix (0.3.4) - not called by Solix or any RatPack mod, but kept: Starlight API that other mods may call
         public synchronized LightQueue.ChunkTasks queueChunkBlocklightEdgeCheck(final SectionPos pos, final ShortCollection sections) {
-            final ChunkTasks tasks = this.chunkTasks.computeIfAbsent(CoordinateUtils.getChunkKey(pos), ChunkTasks::new);
+            final ChunkTasks tasks = this.getOrCreate(CoordinateUtils.getChunkKey(pos)); // Solix (0.3.3) - keeps size current
 
             ShortOpenHashSet queuedEdges = tasks.queuedEdgeChecksBlock;
             if (queuedEdges == null) {
@@ -783,6 +925,7 @@ public final class StarLightInterface {
             final ChunkTasks tasks;
             synchronized (this) {
                 tasks = this.chunkTasks.remove(CoordinateUtils.getChunkKey(pos));
+                this.size = this.chunkTasks.size(); // Solix (0.3.3)
             }
             if (tasks != null) {
                 tasks.onComplete.complete(null);
@@ -794,7 +937,9 @@ public final class StarLightInterface {
             if (this.chunkTasks.isEmpty()) {
                 return null;
             }
-            return this.chunkTasks.removeFirst();
+            final ChunkTasks tasks = this.chunkTasks.removeFirst();
+            this.size = this.chunkTasks.size(); // Solix (0.3.3)
+            return tasks;
         }
 
         public static final class ChunkTasks {
@@ -810,8 +955,45 @@ public final class StarLightInterface {
 
             public final long chunkCoordinate;
 
+            public int failures; // Solix (0.3.2) - worker failures, see requeueFailedTasks
+
             public ChunkTasks(final long chunkCoordinate) {
                 this.chunkCoordinate = chunkCoordinate;
+            }
+
+            // Solix (0.3.2) - adds the work of an older task for the same chunk; this task's newer section changes win
+            void mergeOlder(final ChunkTasks older) {
+                this.changedPositions.addAll(older.changedPositions);
+                if (older.changedSectionSet != null) {
+                    if (this.changedSectionSet == null) {
+                        this.changedSectionSet = older.changedSectionSet;
+                    } else {
+                        for (int i = 0; i < this.changedSectionSet.length; ++i) {
+                            if (this.changedSectionSet[i] == null) {
+                                this.changedSectionSet[i] = older.changedSectionSet[i];
+                            }
+                        }
+                    }
+                }
+                if (older.queuedEdgeChecksSky != null) {
+                    if (this.queuedEdgeChecksSky == null) {
+                        this.queuedEdgeChecksSky = new ShortOpenHashSet();
+                    }
+                    this.queuedEdgeChecksSky.addAll(older.queuedEdgeChecksSky);
+                }
+                if (older.queuedEdgeChecksBlock != null) {
+                    if (this.queuedEdgeChecksBlock == null) {
+                        this.queuedEdgeChecksBlock = new ShortOpenHashSet();
+                    }
+                    this.queuedEdgeChecksBlock.addAll(older.queuedEdgeChecksBlock);
+                }
+                if (older.lightTasks != null) {
+                    if (this.lightTasks == null) {
+                        this.lightTasks = new ArrayList<>();
+                    }
+                    this.lightTasks.addAll(0, older.lightTasks);
+                }
+                this.failures = Math.max(this.failures, older.failures);
             }
         }
     }

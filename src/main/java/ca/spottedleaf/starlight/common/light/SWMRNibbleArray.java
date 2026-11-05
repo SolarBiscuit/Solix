@@ -35,8 +35,26 @@ public final class SWMRNibbleArray {
         return new byte[ARRAY_SIZE];
     }
 
+    // Solix (0.3.3) - at most this many spare arrays per thread (256 KB); the pool used to keep its peak size forever
+    private static final int MAX_POOLED_BYTES = 128;
+
     private static void freeBytes(final byte[] bytes) {
-        WORKING_BYTES_POOL.get().addFirst(bytes);
+        final ArrayDeque<byte[]> pool = WORKING_BYTES_POOL.get();
+        if (pool.size() < MAX_POOLED_BYTES) {
+            pool.addFirst(bytes);
+        }
+    }
+
+    // Solix (0.3.3) - like fromVanilla, but adopts the DataLayer's array instead of copying it. Only for a DataLayer
+    // nothing else keeps (the one vanilla's ClientPacketListener#readSectionList creates from a copy of packet data)
+    public static SWMRNibbleArray fromVanillaOwned(final DataLayer nibble) {
+        if (nibble == null) {
+            return new SWMRNibbleArray(null, true);
+        } else if (nibble.isEmpty()) {
+            return new SWMRNibbleArray();
+        } else {
+            return new SWMRNibbleArray(nibble.getData());
+        }
     }
 
     public static SWMRNibbleArray fromVanilla(final DataLayer nibble) {
@@ -329,6 +347,18 @@ public final class SWMRNibbleArray {
         if (!this.isDirty()) {
             return false;
         }
+
+        // Solix start - a section whose light ended up byte-identical (e.g. darkened and re-lit within one update) did
+        // not change: readers already see these values, so drop the copy and report nothing. On the server this saves
+        // the light packet (and the client's re-mesh of the section and its neighbours) and the unsaved mark.
+        if (this.updatingDirty && this.stateUpdating == this.stateVisible && this.storageVisible != null
+                && this.storageUpdating != this.storageVisible && Arrays.equals(this.storageUpdating, this.storageVisible)) {
+            freeBytes(this.storageUpdating);
+            this.storageUpdating = this.storageVisible;
+            this.updatingDirty = false;
+            return false;
+        }
+        // Solix end
 
         synchronized (this) {
             if (this.stateUpdating == INIT_STATE_NULL || this.stateUpdating == INIT_STATE_UNINIT) {

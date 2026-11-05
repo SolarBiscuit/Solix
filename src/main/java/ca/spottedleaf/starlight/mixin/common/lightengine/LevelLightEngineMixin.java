@@ -61,7 +61,8 @@ public abstract class LevelLightEngineMixin implements LightEventListener, StarL
     public void construct(final LightChunkGetter chunkProvider, final boolean hasBlockLight, final boolean hasSkyLight,
                           final CallbackInfo ci) {
         // avoid ClassCastException in cases where custom LightChunkGetters do not return a Level from getLevel()
-        if (chunkProvider.getLevel() instanceof Level) {
+        // Solix (0.3.2) - and tolerate a null LightChunkGetter from mods creating stand-alone light engines
+        if (chunkProvider != null && chunkProvider.getLevel() instanceof Level) {
             this.lightEngine = new StarLightInterface(chunkProvider, hasSkyLight, hasBlockLight, (LevelLightEngine)(Object)this);
         } else {
             this.lightEngine = new StarLightInterface(null, hasSkyLight, hasBlockLight, (LevelLightEngine)(Object)this);
@@ -228,6 +229,17 @@ public abstract class LevelLightEngineMixin implements LightEventListener, StarL
     @Override
     public void clientUpdateLight(final LightLayer lightType, final SectionPos pos,
                                   final DataLayer nibble, final boolean trustEdges) {
+        this.solix$clientUpdateLight(lightType, pos, SWMRNibbleArray.fromVanilla(nibble));
+    }
+
+    // Solix (0.3.3) - for the packet handler: its DataLayer is a fresh copy nothing else keeps, so adopt it
+    @Override
+    public void clientUpdateLightOwned(final LightLayer lightType, final SectionPos pos, final DataLayer nibble) {
+        this.solix$clientUpdateLight(lightType, pos, SWMRNibbleArray.fromVanillaOwned(nibble));
+    }
+
+    @Unique
+    private void solix$clientUpdateLight(final LightLayer lightType, final SectionPos pos, final SWMRNibbleArray newNibble) {
         if (((Object)this).getClass() != LevelLightEngine.class) {
             throw new IllegalStateException("This hook is for the CLIENT ONLY");
         }
@@ -239,7 +251,7 @@ public abstract class LevelLightEngineMixin implements LightEventListener, StarL
                     return StarLightEngine.getFilledEmptyLight(this.lightEngine.getWorld());
                 });
 
-                blockNibbles[pos.getY() - WorldUtil.getMinLightSection(this.lightEngine.getWorld())] = SWMRNibbleArray.fromVanilla(nibble);
+                blockNibbles[pos.getY() - WorldUtil.getMinLightSection(this.lightEngine.getWorld())] = newNibble;
 
                 if (chunk != null) {
                     ((ExtendedChunk)chunk).setBlockNibbles(blockNibbles);
@@ -252,7 +264,7 @@ public abstract class LevelLightEngineMixin implements LightEventListener, StarL
                     return StarLightEngine.getFilledEmptyLight(this.lightEngine.getWorld());
                 });
 
-                skyNibbles[pos.getY() - WorldUtil.getMinLightSection(this.lightEngine.getWorld())] = SWMRNibbleArray.fromVanilla(nibble);
+                skyNibbles[pos.getY() - WorldUtil.getMinLightSection(this.lightEngine.getWorld())] = newNibble;
 
                 if (chunk != null) {
                     ((ExtendedChunk)chunk).setSkyNibbles(skyNibbles);
@@ -270,6 +282,10 @@ public abstract class LevelLightEngineMixin implements LightEventListener, StarL
         }
         this.blockLightMap.remove(CoordinateUtils.getChunkKey(chunkPos));
         this.skyLightMap.remove(CoordinateUtils.getChunkKey(chunkPos));
+        // Solix (0.3.2) - vanilla's queueLightRemoval (replaced by this) also disabled light for the chunk
+        synchronized (this.solix$lightingEnabledChunks) {
+            this.solix$lightingEnabledChunks.remove(CoordinateUtils.getChunkKey(chunkPos));
+        }
     }
 
     @Override
@@ -278,13 +294,19 @@ public abstract class LevelLightEngineMixin implements LightEventListener, StarL
             throw new IllegalStateException("This hook is for the CLIENT ONLY");
         }
         final long key = CoordinateUtils.getChunkKey(pos);
-        final SWMRNibbleArray[] blockNibbles = this.blockLightMap.get(key);
-        final SWMRNibbleArray[] skyNibbles = this.skyLightMap.get(key);
-        if (blockNibbles != null) {
-            ((ExtendedChunk)chunk).setBlockNibbles(blockNibbles);
+        SWMRNibbleArray[] blockNibbles = this.blockLightMap.get(key);
+        SWMRNibbleArray[] skyNibbles = this.skyLightMap.get(key);
+        // Solix start (0.3.4) - this runs right after the chunk packet's light was applied (cached light was dropped
+        // first): no entry means the packet has no light for that layer at all (e.g. an all-air chunk). The client may
+        // reuse the LevelChunk object of a chunk it already had, so install empty light instead of keeping the old one
+        if (blockNibbles == null) {
+            this.blockLightMap.put(key, blockNibbles = StarLightEngine.getFilledEmptyLight(this.lightEngine.getWorld()));
         }
-        if (skyNibbles != null) {
-            ((ExtendedChunk)chunk).setSkyNibbles(skyNibbles);
+        if (skyNibbles == null) {
+            this.skyLightMap.put(key, skyNibbles = StarLightEngine.getFilledEmptyLight(this.lightEngine.getWorld()));
         }
+        // Solix end
+        ((ExtendedChunk)chunk).setBlockNibbles(blockNibbles);
+        ((ExtendedChunk)chunk).setSkyNibbles(skyNibbles);
     }
 }

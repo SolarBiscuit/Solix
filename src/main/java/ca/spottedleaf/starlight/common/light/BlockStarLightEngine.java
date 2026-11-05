@@ -8,23 +8,19 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.ChunkStatus;
-import net.minecraft.world.level.chunk.ImposterProtoChunk;
-import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.level.chunk.LightChunkGetter;
 import net.minecraft.world.level.chunk.PalettedContainer;
 import net.minecraft.world.phys.shapes.Shapes;
 import net.minecraft.world.phys.shapes.VoxelShape;
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 public final class BlockStarLightEngine extends StarLightEngine {
 
-    public BlockStarLightEngine(final Level world) {
-        super(false, world);
+    public BlockStarLightEngine(final Level world, final boolean isClientSide, final LightChunkGetter lightAccess) {
+        super(false, world, isClientSide, lightAccess);
     }
 
     @Override
@@ -97,7 +93,7 @@ public final class BlockStarLightEngine extends StarLightEngine {
         final int currentLevel = this.getLightLevel(worldX, worldY, worldZ);
         final BlockState blockState = this.getBlockState(worldX, worldY, worldZ);
         this.checkBlockPos.set(worldX, worldY, worldZ);
-        final int emittedLevel = blockState.getLightEmission(lightAccess.getLevel(), this.checkBlockPos) & emittedMask; // Forge
+        final int emittedLevel = this.callEmission(blockState, this.checkBlockPos) & emittedMask; // Forge
 
         this.setLightLevel(worldX, worldY, worldZ, emittedLevel);
         // this accounts for change in emitted light that would cause an increase
@@ -116,6 +112,7 @@ public final class BlockStarLightEngine extends StarLightEngine {
                 ((worldX + (worldZ << 6) + (worldY << (6 + 6)) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
                         | (currentLevel & 0xFL) << (6 + 6 + 16)
                         | (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4))
+                        | this.getSeedDecreaseFlags(worldX, worldY, worldZ, currentLevel) // Solix - targeted decrease
                         // always keep sided transparent false here, new block might be conditionally transparent which would
                         // prevent us from decreasing sources in the directions where the new block is opaque
                         // if it turns out we were wrong to de-propagate the source, the re-propagate logic WILL always
@@ -132,7 +129,7 @@ public final class BlockStarLightEngine extends StarLightEngine {
                                       final int expect) {
         final BlockState centerState = this.getBlockState(worldX, worldY, worldZ);
         this.recalcCenterPos.set(worldX, worldY, worldZ); // Forge
-        int level = centerState.getLightEmission(lightAccess.getLevel(), this.recalcCenterPos) & 0xF;
+        int level = this.callEmission(centerState, this.recalcCenterPos) & 0xF;
 
         if (level >= (15 - 1) || level > expect) {
             return level;
@@ -144,7 +141,7 @@ public final class BlockStarLightEngine extends StarLightEngine {
 
         if (opacity == -1) {
             // Forge
-            opacity = centerState.getLightBlock(lightAccess.getLevel(), this.recalcCenterPos);
+            opacity = this.callLightBlock(centerState, this.recalcCenterPos);
             if (((ExtendedAbstractBlockState)centerState).isConditionallyFullOpaque()) {
                 conditionallyOpaqueState = centerState;
             } else {
@@ -177,8 +174,8 @@ public final class BlockStarLightEngine extends StarLightEngine {
                 // we don't read the blockstate because most of the time this is false, so using the faster
                 // known transparency lookup results in a net win
                 this.recalcNeighbourPos.set(offX, offY, offZ);
-                final VoxelShape neighbourFace = neighbourState.getFaceOcclusionShape(lightAccess.getLevel(), this.recalcNeighbourPos, direction.opposite.nms);
-                final VoxelShape thisFace = conditionallyOpaqueState == null ? Shapes.empty() : conditionallyOpaqueState.getFaceOcclusionShape(lightAccess.getLevel(), this.recalcCenterPos, direction.nms);
+                final VoxelShape neighbourFace = this.callFaceShape(neighbourState, this.recalcNeighbourPos, direction.opposite.nms);
+                final VoxelShape thisFace = conditionallyOpaqueState == null ? Shapes.empty() : this.callFaceShape(conditionallyOpaqueState, this.recalcCenterPos, direction.nms);
                 if (Shapes.faceShapeOccludes(thisFace, neighbourFace)) {
                     // not allowed to propagate
                     continue;
@@ -211,9 +208,13 @@ public final class BlockStarLightEngine extends StarLightEngine {
         return state.getLightEmission() != 0 || PositionalEmission.isPositionAware(state);
     }
 
-    protected List<BlockPos> getSources(final LightChunkGetter lightAccess, final ChunkAccess chunk) {
-        final List<BlockPos> sources = new ArrayList<>();
-
+    /**
+     * Solix (0.3.7): finds the chunk's light sources and queues them for propagation, in one pass over the sections.
+     * Before, {@code getSources} collected a {@code List<BlockPos>} (one BlockPos per source) that was walked a second
+     * time; the order of the sources, the emission values and the light level comparisons are unchanged.
+     */
+    private void queueSources(final ChunkAccess chunk) {
+        final int emittedMask = this.emittedLightMask;
         final int offX = chunk.getPos().x << 4;
         final int offZ = chunk.getPos().z << 4;
 
@@ -237,47 +238,52 @@ public final class BlockStarLightEngine extends StarLightEngine {
 
             for (int index = 0; index < (16 * 16 * 16); ++index) {
                 final BlockState state = states.get(index);
-                // Forge start - use correct getLightEmission
-                this.mutablePos1.set(offX | (index & 15), offY | (index >>> 8), offZ | ((index >>> 4) & 15));
-                if (state.getLightEmission(lightAccess.getLevel(), this.mutablePos1) <= 0) {
+                // index = x | (z << 4) | (y << 8)
+                final int worldX = offX | (index & 15);
+                final int worldY = offY | (index >>> 8);
+                final int worldZ = offZ | ((index >>> 4) & 15);
+
+                final int emittedLight;
+                // Solix (0.3.3) - a cached opacity means the block has no positional emission (see BlockStateBaseMixin),
+                // so the plain field is the real emission; only the others need Forge's positional call
+                if (((ExtendedAbstractBlockState)state).getOpacityIfCached() != -1) {
+                    if (state.getLightEmission() <= 0) {
+                        continue;
+                    }
+                    emittedLight = state.getLightEmission() & emittedMask;
+                } else {
+                    // Forge start - use correct getLightEmission
+                    this.mutablePos1.set(worldX, worldY, worldZ);
+                    final int emission = this.callEmission(state, this.mutablePos1);
+                    if (emission <= 0) {
+                        continue;
+                    }
+                    emittedLight = emission & emittedMask;
+                    // Forge end - use correct getLightEmission
+                }
+
+                if (emittedLight <= this.getLightLevel(worldX, worldY, worldZ)) {
+                    // some other source is brighter
                     continue;
                 }
-                // Forge end - use correct getLightEmission
 
-                // index = x | (z << 4) | (y << 8)
-                sources.add(new BlockPos(offX | (index & 15), offY | (index >>> 8), offZ | ((index >>> 4) & 15)));
+                this.appendToIncreaseQueue(
+                        ((worldX + (worldZ << 6) + (worldY << (6 + 6)) + this.coordinateOffset) & ((1L << (6 + 6 + 16)) - 1))
+                                | (emittedLight & 0xFL) << (6 + 6 + 16)
+                                | (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4))
+                                | (((ExtendedAbstractBlockState)state).isConditionallyFullOpaque() ? FLAG_HAS_SIDED_TRANSPARENT_BLOCKS : 0)
+                );
+
+                // propagation wont set this for us
+                this.setLightLevel(worldX, worldY, worldZ, emittedLight);
             }
         }
-
-        return sources;
     }
 
     @Override
     public void lightChunk(final LightChunkGetter lightAccess, final ChunkAccess chunk, final boolean needsEdgeChecks) {
         // setup sources
-        final int emittedMask = this.emittedLightMask;
-        final List<BlockPos> positions = this.getSources(lightAccess, chunk);
-        for (int i = 0, len = positions.size(); i < len; ++i) {
-            final BlockPos pos = positions.get(i);
-            final BlockState blockState = this.getBlockState(pos.getX(), pos.getY(), pos.getZ());
-            final int emittedLight = blockState.getLightEmission(lightAccess.getLevel(), pos) & emittedMask; // Forge
-
-            if (emittedLight <= this.getLightLevel(pos.getX(), pos.getY(), pos.getZ())) {
-                // some other source is brighter
-                continue;
-            }
-
-            this.appendToIncreaseQueue(
-                    ((pos.getX() + (pos.getZ() << 6) + (pos.getY() << (6 + 6)) + this.coordinateOffset) & ((1L << (6 + 6 + 16)) - 1))
-                            | (emittedLight & 0xFL) << (6 + 6 + 16)
-                            | (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4))
-                            | (((ExtendedAbstractBlockState)blockState).isConditionallyFullOpaque() ? FLAG_HAS_SIDED_TRANSPARENT_BLOCKS : 0)
-            );
-
-
-            // propagation wont set this for us
-            this.setLightLevel(pos.getX(), pos.getY(), pos.getZ(), emittedLight);
-        }
+        this.queueSources(chunk);
 
         if (needsEdgeChecks) {
             // not required to propagate here, but this will reduce the hit of the edge checks

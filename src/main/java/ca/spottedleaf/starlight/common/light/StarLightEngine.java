@@ -1,12 +1,14 @@
 package ca.spottedleaf.starlight.common.light;
 
 import ca.spottedleaf.starlight.common.blockstate.ExtendedAbstractBlockState;
+import ca.spottedleaf.starlight.common.config.SolixConfig;
 import ca.spottedleaf.starlight.common.util.CoordinateUtils;
 import ca.spottedleaf.starlight.common.util.IntegerUtil;
 import ca.spottedleaf.starlight.common.util.WorldUtil;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.shorts.ShortCollection;
 import it.unimi.dsi.fastutil.shorts.ShortIterator;
+import ca.spottedleaf.starlight.common.config.SolixConfig;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.SectionPos;
@@ -128,16 +130,26 @@ public abstract class StarLightEngine {
     protected final boolean isClientSide;
 
     protected final Level world;
+    protected final BlockGetter blockAccess; // Solix (0.3.6), see the constructor
     protected final int minLightSection;
     protected final int maxLightSection;
     protected final int minSection;
     protected final int maxSection;
 
-    protected StarLightEngine(final boolean skylightPropagator, final Level world) {
+    // Solix (0.3.3) - isClientSide comes from StarLightInterface, so readers and engines agree for levels that are
+    // neither a ServerLevel nor client side (fake/virtual levels of mods)
+    protected StarLightEngine(final boolean skylightPropagator, final Level world, final boolean isClientSide, final LightChunkGetter lightAccess) {
         this.skylightPropagator = skylightPropagator;
         this.emittedLightMask = skylightPropagator ? 0 : 0xF;
-        this.isClientSide = world.isClientSide;
+        this.isClientSide = isClientSide;
         this.world = world;
+        // Solix (0.3.6) - what mods' position-aware light callbacks (getLightEmission/getLightBlock/getFaceOcclusionShape)
+        // get to read. Server side that is a view that never loads a chunk or waits for the server thread (the real
+        // level does, from a light worker, and deadlocks against a server thread that waits for this chunk's light).
+        // Only for real server levels: the client light engine and fake/virtual levels of mods run on the thread that
+        // owns the level, where the real level is safe and stays exactly as before.
+        this.blockAccess = (SolixConfig.SAFE_LIGHT_VIEW && !isClientSide && lightAccess != null && world instanceof net.minecraft.server.level.ServerLevel)
+                ? new LightBlockGetter(lightAccess, world) : world;
         this.minLightSection = WorldUtil.getMinLightSection(world);
         this.maxLightSection = WorldUtil.getMaxLightSection(world);
         this.minSection = WorldUtil.getMinSection(world);
@@ -146,6 +158,57 @@ public abstract class StarLightEngine {
         this.sectionCache = new LevelChunkSection[5 * 5 * ((this.maxLightSection - this.minLightSection + 1) + 2)]; // add two extra sections for buffer
         this.nibbleCache = new SWMRNibbleArray[5 * 5 * ((this.maxLightSection - this.minLightSection + 1) + 2)]; // add two extra sections for buffer
         this.notifyUpdateCache = new boolean[5 * 5 * ((this.maxLightSection - this.minLightSection + 1) + 2)]; // add two extra sections for buffer
+    }
+
+    // Solix (0.3.7) - all calls into mods' position-aware light code go through these three. If a mod's code casts the
+    // BlockGetter it is given to Level (or similar) and fails with a ClassCastException, that block class is
+    // remembered and is given the real level from then on, as in 0.3.5 and before (see LightViewFallback).
+    protected final int callEmission(final BlockState state, final BlockPos pos) {
+        final BlockGetter access = this.blockAccess;
+        if (access != this.world) {
+            if (LightViewFallback.useRealLevel(state)) {
+                return state.getLightEmission(this.world, pos);
+            }
+            try {
+                return state.getLightEmission(access, pos);
+            } catch (final ClassCastException ex) {
+                LightViewFallback.record(state, ex);
+                return state.getLightEmission(this.world, pos);
+            }
+        }
+        return state.getLightEmission(access, pos);
+    }
+
+    protected final int callLightBlock(final BlockState state, final BlockPos pos) {
+        final BlockGetter access = this.blockAccess;
+        if (access != this.world) {
+            if (LightViewFallback.useRealLevel(state)) {
+                return state.getLightBlock(this.world, pos);
+            }
+            try {
+                return state.getLightBlock(access, pos);
+            } catch (final ClassCastException ex) {
+                LightViewFallback.record(state, ex);
+                return state.getLightBlock(this.world, pos);
+            }
+        }
+        return state.getLightBlock(access, pos);
+    }
+
+    protected final VoxelShape callFaceShape(final BlockState state, final BlockPos pos, final Direction direction) {
+        final BlockGetter access = this.blockAccess;
+        if (access != this.world) {
+            if (LightViewFallback.useRealLevel(state)) {
+                return state.getFaceOcclusionShape(this.world, pos, direction);
+            }
+            try {
+                return state.getFaceOcclusionShape(access, pos, direction);
+            } catch (final ClassCastException ex) {
+                LightViewFallback.record(state, ex);
+                return state.getFaceOcclusionShape(this.world, pos, direction);
+            }
+        }
+        return state.getFaceOcclusionShape(access, pos, direction);
     }
 
     protected final void setupEncodeOffset(final int centerX, final int centerY, final int centerZ) {
@@ -265,8 +328,14 @@ public abstract class StarLightEngine {
             final int chunkZ = ((index / 5) % 5) - this.chunkOffsetZ;
             final int ySections = this.maxSection - this.minSection + 1;
             final int chunkY = ((index / (5*5)) % (ySections + 2 + 2)) - this.chunkOffsetY;
+            // Solix - updateVisible() is false for a section whose light ended up unchanged (see SWMRNibbleArray)
             if ((nibble != null && nibble.updateVisible()) || this.notifyUpdateCache[index]) {
+                if (LightStats.ENABLED) {
+                    ++this.statSectionsReported;
+                }
                 lightAccess.onLightUpdate(this.skylightPropagator ? LightLayer.SKY : LightLayer.BLOCK, SectionPos.of(chunkX, chunkY, chunkZ));
+            } else if (LightStats.ENABLED) {
+                ++this.statSectionsSuppressed;
             }
         }
     }
@@ -276,10 +345,34 @@ public abstract class StarLightEngine {
         Arrays.fill(this.nibbleCache, null);
         Arrays.fill(this.chunkCache, null);
         Arrays.fill(this.emptinessMapCache, null);
-        if (this.isClientSide) {
+        if (this.isClientSide || this.forcedReports) {
             Arrays.fill(this.notifyUpdateCache, false);
+            this.forcedReports = false; // Solix (0.3.3)
+        }
+        this.clearQueues(); // Solix
+    }
+
+    // Solix start (0.3.3) - always send the light of sections holding changed blocks
+    // Since 0.3.0 sections whose light ends up unchanged are not reported (SWMRNibbleArray#updateVisible). Clients also
+    // compute light for the block changes they receive, and before 0.3.0 the server re-sent the changed block's section
+    // whenever it was rewritten, which corrected the client where its own result differed (e.g. at the edge of its view
+    // distance). Keep that for the sections the changed blocks are in; unchanged sections elsewhere stay unsent.
+    // On the server notifyUpdateCache is otherwise unused, it marks the sections to report here.
+    protected boolean forcedReports;
+
+    protected final void forceReportChangedSections(final Set<BlockPos> positions) {
+        if (this.isClientSide) {
+            return;
+        }
+        for (final BlockPos pos : positions) {
+            final int index = (pos.getX() >> 4) + 5 * (pos.getZ() >> 4) + (5 * 5) * (pos.getY() >> 4) + this.chunkSectionIndexOffset;
+            if (this.nibbleCache[index] != null) {
+                this.notifyUpdateCache[index] = true;
+                this.forcedReports = true;
+            }
         }
     }
+    // Solix end (0.3.3)
 
     protected final BlockState getBlockState(final int worldX, final int worldY, final int worldZ) {
         final LevelChunkSection section = this.sectionCache[(worldX >> 4) + 5 * (worldZ >> 4) + (5 * 5) * (worldY >> 4) + this.chunkSectionIndexOffset];
@@ -412,6 +505,7 @@ public abstract class StarLightEngine {
 
     public final void blocksChangedInChunk(final LightChunkGetter lightAccess, final int chunkX, final int chunkZ,
                                            final Set<BlockPos> positions, final Boolean[] changedSections) {
+        final long statStart = LightStats.ENABLED ? System.nanoTime() : 0L; // Solix
         this.setupCaches(lightAccess, chunkX * 16 + 7, 128, chunkZ * 16 + 7, true, true);
         try {
             final ChunkAccess chunk = this.getChunkInCache(chunkX, chunkZ);
@@ -426,10 +520,14 @@ public abstract class StarLightEngine {
             }
             if (!positions.isEmpty()) {
                 this.propagateBlockChanges(lightAccess, chunk, positions);
+                this.forceReportChangedSections(positions); // Solix (0.3.3)
             }
             this.updateVisible(lightAccess);
         } finally {
             this.destroyCaches();
+            if (LightStats.ENABLED) {
+                LightStats.record(LightStats.BLOCK_CHANGES, statStart, this); // Solix
+            }
         }
     }
 
@@ -731,6 +829,37 @@ public abstract class StarLightEngine {
 
     protected abstract void setNibbleNull(final int chunkX, final int chunkY, final int chunkZ);
 
+    // Solix - section emptiness bitmasks of the 5x5 chunk columns, see handleEmptySectionChanges
+    protected final long[] nonEmptyMasks = new long[5 * 5];
+
+    // Solix - the original per-section search: whether every section in the 3x3x3 around (chunkX, sectionY, chunkZ) is
+    // empty. Only used when a world has too many light sections for the bitmasks
+    private boolean areNeighbourSectionsEmpty(final int chunkX, final int sectionY, final int chunkZ) {
+        for (int dy2 = -1; dy2 <= 1; ++dy2) {
+            for (int dz2 = -1; dz2 <= 1; ++dz2) {
+                for (int dx2 = -1; dx2 <= 1; ++dx2) {
+                    final int y = sectionY + dy2;
+                    if (y < this.minSection || y > this.maxSection) {
+                        // empty
+                        continue;
+                    }
+                    final boolean[] emptinessMap = this.getEmptinessMap(dx2 + chunkX, dz2 + chunkZ);
+                    if (emptinessMap != null) {
+                        if (!emptinessMap[y - this.minSection]) {
+                            return false;
+                        }
+                    } else {
+                        final LevelChunkSection section = this.getChunkSection(dx2 + chunkX, y, dz2 + chunkZ);
+                        if (section != null && !section.hasOnlyAir()) {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
     // subclasses should not initialise caches, as this will always be done by the super call
     // subclasses should not invoke updateVisible, as this will always be done by the super call
     // subclasses are guaranteed that this is always called before a changed block set
@@ -788,6 +917,36 @@ public abstract class StarLightEngine {
             }
         }
 
+        // Solix start - section emptiness as bitmasks
+        // For every chunk column within 2 of this chunk, bit (y - minLightSection) of nonEmptyMasks is set when section y
+        // is not empty (same sources as the per-section search: the emptiness map, or the section itself when the chunk
+        // has no map yet). Whether all sections in the 3x3x3 around a light section are empty is then one bit of the OR
+        // of 9 column masks smeared one section up and down, instead of up to 27 lookups for every light section.
+        // The emptiness maps and sections do not change below, so the masks can be built up front.
+        final boolean useMasks = this.maxLightSection - this.minLightSection + 1 <= 63;
+        if (useMasks) {
+            for (int dz = -2; dz <= 2; ++dz) {
+                for (int dx = -2; dx <= 2; ++dx) {
+                    final boolean[] emptinessMap = this.getEmptinessMap(dx + chunkX, dz + chunkZ);
+                    long mask = 0L;
+                    for (int y = this.minSection; y <= this.maxSection; ++y) {
+                        final boolean nonEmpty;
+                        if (emptinessMap != null) {
+                            nonEmpty = !emptinessMap[y - this.minSection];
+                        } else {
+                            final LevelChunkSection section = this.getChunkSection(dx + chunkX, y, dz + chunkZ);
+                            nonEmpty = section != null && !section.hasOnlyAir();
+                        }
+                        if (nonEmpty) {
+                            mask |= 1L << (y - this.minLightSection);
+                        }
+                    }
+                    this.nonEmptyMasks[(dx + 2) + 5 * (dz + 2)] = mask;
+                }
+            }
+        }
+        // Solix end
+
         // check for de-init and lazy-init
         // lazy init is when chunks are being lit, so at the time they weren't loaded when their neighbours were running
         // init checks.
@@ -805,34 +964,23 @@ public abstract class StarLightEngine {
                     }
                 }
 
-                for (int sectionY = this.maxLightSection; sectionY >= this.minLightSection; --sectionY) {
-                    // check neighbours to see if we need to de-init this one
-                    boolean allEmpty = true;
-                    neighbour_search:
-                    for (int dy2 = -1; dy2 <= 1; ++dy2) {
-                        for (int dz2 = -1; dz2 <= 1; ++dz2) {
-                            for (int dx2 = -1; dx2 <= 1; ++dx2) {
-                                final int y = sectionY + dy2;
-                                if (y < this.minSection || y > this.maxSection) {
-                                    // empty
-                                    continue;
-                                }
-                                final boolean[] emptinessMap = this.getEmptinessMap(dx + dx2 + chunkX, dz + dz2 + chunkZ);
-                                if (emptinessMap != null) {
-                                    if (!emptinessMap[y - this.minSection]) {
-                                        allEmpty = false;
-                                        break neighbour_search;
-                                    }
-                                } else {
-                                    final LevelChunkSection section = this.getChunkSection(dx + dx2 + chunkX, y, dz + dz2 + chunkZ);
-                                    if (section != null && !section.hasOnlyAir()) {
-                                        allEmpty = false;
-                                        break neighbour_search;
-                                    }
-                                }
-                            }
+                // Solix start - non-empty sections in the 3x3 columns around this one, smeared one section up and down
+                long nearNonEmpty = 0L;
+                if (useMasks) {
+                    for (int dz2 = -1; dz2 <= 1; ++dz2) {
+                        for (int dx2 = -1; dx2 <= 1; ++dx2) {
+                            nearNonEmpty |= this.nonEmptyMasks[(dx + dx2 + 2) + 5 * (dz + dz2 + 2)];
                         }
                     }
+                    nearNonEmpty |= (nearNonEmpty << 1) | (nearNonEmpty >>> 1);
+                }
+                // Solix end
+
+                for (int sectionY = this.maxLightSection; sectionY >= this.minLightSection; --sectionY) {
+                    // check neighbours to see if we need to de-init this one
+                    // Solix - bitmask test, the per-section search is kept for worlds with more than 63 light sections
+                    final boolean allEmpty = useMasks ? ((nearNonEmpty >>> (sectionY - this.minLightSection)) & 1L) == 0L
+                            : this.areNeighbourSectionsEmpty(dx + chunkX, sectionY, dz + chunkZ);
 
                     if (allEmpty & neighboursLoaded) {
                         // can only de-init when neighbours are loaded
@@ -854,6 +1002,7 @@ public abstract class StarLightEngine {
     }
 
     public final void checkChunkEdges(final LightChunkGetter lightAccess, final int chunkX, final int chunkZ) {
+        final long statStart = LightStats.ENABLED ? System.nanoTime() : 0L; // Solix
         this.setupCaches(lightAccess, chunkX * 16 + 7, 128, chunkZ * 16 + 7, true, false);
         try {
             final ChunkAccess chunk = this.getChunkInCache(chunkX, chunkZ);
@@ -864,10 +1013,14 @@ public abstract class StarLightEngine {
             this.updateVisible(lightAccess);
         } finally {
             this.destroyCaches();
+            if (LightStats.ENABLED) {
+                LightStats.record(LightStats.EDGE_CHECKS, statStart, this); // Solix
+            }
         }
     }
 
     public final void checkChunkEdges(final LightChunkGetter lightAccess, final int chunkX, final int chunkZ, final ShortCollection sections) {
+        final long statStart = LightStats.ENABLED ? System.nanoTime() : 0L; // Solix
         this.setupCaches(lightAccess, chunkX * 16 + 7, 128, chunkZ * 16 + 7, true, false);
         try {
             final ChunkAccess chunk = this.getChunkInCache(chunkX, chunkZ);
@@ -878,6 +1031,9 @@ public abstract class StarLightEngine {
             this.updateVisible(lightAccess);
         } finally {
             this.destroyCaches();
+            if (LightStats.ENABLED) {
+                LightStats.record(LightStats.EDGE_CHECKS, statStart, this); // Solix
+            }
         }
     }
 
@@ -892,6 +1048,7 @@ public abstract class StarLightEngine {
     public final void light(final LightChunkGetter lightAccess, final ChunkAccess chunk, final Boolean[] emptySections) {
         final int chunkX = chunk.getPos().x;
         final int chunkZ = chunk.getPos().z;
+        final long statStart = LightStats.ENABLED ? System.nanoTime() : 0L; // Solix
         this.setupCaches(lightAccess, chunkX * 16 + 7, 128, chunkZ * 16 + 7, true, true);
 
         try {
@@ -911,6 +1068,9 @@ public abstract class StarLightEngine {
             this.updateVisible(lightAccess);
         } finally {
             this.destroyCaches();
+            if (LightStats.ENABLED) {
+                LightStats.record(LightStats.CHUNK_LIGHT, statStart, this); // Solix
+            }
         }
     }
 
@@ -938,6 +1098,7 @@ public abstract class StarLightEngine {
         };
 
         int lightCalls = 0;
+        final long statStart = LightStats.ENABLED ? System.nanoTime() : 0L; // Solix
 
         for (final ChunkPos chunkPos : chunks) {
             final int chunkX = chunkPos.x;
@@ -1033,6 +1194,10 @@ public abstract class StarLightEngine {
             ++lightCalls;
         }
 
+        if (LightStats.ENABLED) {
+            LightStats.record(LightStats.RELIGHT, statStart, this); // Solix
+        }
+
         if (onComplete != null) {
             onComplete.accept(lightCalls);
         }
@@ -1042,8 +1207,10 @@ public abstract class StarLightEngine {
     // lower (6 + 6 + 16) = 28 bits: encoded coordinate position (x | (z << 6) | (y << (6 + 6))))
     // next 4 bits: propagated light level (0, 15]
     // next 6 bits: propagation direction bitset
-    // next 24 bits: unused
-    // last 3 bits: state flags
+    // next 4 bits: (Solix, decrease candidates only) the block's attenuation, max(1, opacity)
+    // next 4 bits: (Solix, decrease candidates only) the block's emitted light
+    // next 13 bits: unused
+    // last 5 bits: state flags
     // state flags:
     // whether the increase propagator needs to write the propagated level to the position, used to avoid cascading light
     // updates for block sources
@@ -1053,41 +1220,106 @@ public abstract class StarLightEngine {
     protected static final long FLAG_RECHECK_LEVEL = Long.MIN_VALUE >>> 1;
     // whether the propagation needs to consider if its block is conditionally transparent
     protected static final long FLAG_HAS_SIDED_TRANSPARENT_BLOCKS = Long.MIN_VALUE;
+    // Solix - targeted decrease: the entry is a block that may have lost its light. It is only darkened when neither its
+    // own emission nor a neighbour still provides its level, see performLightDecrease
+    protected static final long FLAG_CHECK_SUPPORT = Long.MIN_VALUE >>> 3;
+    // Solix - targeted decrease: darken every block this entry's light could have reached, like the classic decrease,
+    // without support checks. Set on seeds whose block was a light source itself (see getSeedDecreaseFlags) and passed on
+    // to the blocks they darken: below a removed source almost nothing keeps its light, so support checks only cost time
+    protected static final long FLAG_DARKEN_ALL = Long.MIN_VALUE >>> 4;
 
-    protected long[] increaseQueue = new long[16 * 16 * 16];
-    protected int increaseQueueInitialLength;
-    protected long[] decreaseQueue = new long[16 * 16 * 16];
-    protected int decreaseQueueInitialLength;
+    // Solix start - per-level queues
+    // Both queues are split into 16 buckets by light level. With ordered propagation the increase queue is processed from
+    // bucket 15 down to 0 (Dial's algorithm): a propagated level is always lower than the level it came from, so each
+    // block is written once at its final level, instead of being lit by a weaker source first and overwritten by a
+    // stronger one later. The targeted decrease relies on the same order. In classic mode every entry goes into
+    // FIFO_BUCKET, which is Starlight's plain FIFO queue.
+    protected static final boolean ORDERED = SolixConfig.ORDERED;
+    protected static final boolean TARGETED = SolixConfig.TARGETED;
+    protected static final int FIFO_BUCKET = 0;
 
-    protected final long[] resizeIncreaseQueue() {
-        return this.increaseQueue = Arrays.copyOf(this.increaseQueue, this.increaseQueue.length * 2);
+    protected final long[][] increaseQueues = new long[16][];
+    protected final int[] increaseQueueLengths = new int[16];
+    protected final long[][] decreaseQueues = new long[16][];
+    protected final int[] decreaseQueueLengths = new int[16];
+    {
+        for (int bucket = 0; bucket < 16; ++bucket) {
+            this.increaseQueues[bucket] = new long[initialQueueLength(ORDERED, bucket)];
+            this.decreaseQueues[bucket] = new long[initialQueueLength(TARGETED, bucket)];
+        }
     }
 
-    protected final long[] resizeDecreaseQueue() {
-        return this.decreaseQueue = Arrays.copyOf(this.decreaseQueue, this.decreaseQueue.length * 2);
+    // counters for LightStats, only written when it is enabled
+    long statIncreasePops;
+    long statDecreasePops;
+    long statCandidatesKept;
+    long statCandidatesDarkened;
+    long statLightWrites;
+    long statSectionsReported;
+    long statSectionsSuppressed;
+
+    protected static int increaseBucket(final int level) {
+        return ORDERED ? level : FIFO_BUCKET;
+    }
+
+    protected static int decreaseBucket(final int level) {
+        return TARGETED ? level : FIFO_BUCKET;
+    }
+
+    protected final long[] resizeIncreaseQueue(final int bucket) {
+        return this.increaseQueues[bucket] = Arrays.copyOf(this.increaseQueues[bucket], this.increaseQueues[bucket].length * 2);
+    }
+
+    protected final long[] resizeDecreaseQueue(final int bucket) {
+        return this.decreaseQueues[bucket] = Arrays.copyOf(this.decreaseQueues[bucket], this.decreaseQueues[bucket].length * 2);
     }
 
     protected final void appendToIncreaseQueue(final long value) {
-        final int idx = this.increaseQueueInitialLength++;
-        long[] queue = this.increaseQueue;
+        final int bucket = increaseBucket((int)((value >>> (6 + 6 + 16)) & 0xFL));
+        final int idx = this.increaseQueueLengths[bucket]++;
+        long[] queue = this.increaseQueues[bucket];
         if (idx >= queue.length) {
-            queue = this.resizeIncreaseQueue();
-            queue[idx] = value;
-        } else {
-            queue[idx] = value;
+            queue = this.resizeIncreaseQueue(bucket);
         }
+        queue[idx] = value;
     }
 
     protected final void appendToDecreaseQueue(final long value) {
-        final int idx = this.decreaseQueueInitialLength++;
-        long[] queue = this.decreaseQueue;
+        final int bucket = decreaseBucket((int)((value >>> (6 + 6 + 16)) & 0xFL));
+        final int idx = this.decreaseQueueLengths[bucket]++;
+        long[] queue = this.decreaseQueues[bucket];
         if (idx >= queue.length) {
-            queue = this.resizeDecreaseQueue();
-            queue[idx] = value;
-        } else {
-            queue[idx] = value;
+            queue = this.resizeDecreaseQueue(bucket);
+        }
+        queue[idx] = value;
+    }
+
+    // removes the increase entry that was appended last at this level
+    protected final void removeLastFromIncreaseQueue(final int level) {
+        --this.increaseQueueLengths[increaseBucket(level)];
+    }
+
+    // drops queued work left behind by an update that threw, so a pooled engine does not replay it
+    protected final void clearQueues() {
+        Arrays.fill(this.increaseQueueLengths, 0);
+        Arrays.fill(this.decreaseQueueLengths, 0);
+        // Solix (0.3.3) - engines are pooled for the world's lifetime: do not keep a huge queue from one big update
+        for (int bucket = 0; bucket < 16; ++bucket) {
+            if (this.increaseQueues[bucket].length > MAX_RETAINED_QUEUE) {
+                this.increaseQueues[bucket] = new long[initialQueueLength(ORDERED, bucket)];
+            }
+            if (this.decreaseQueues[bucket].length > MAX_RETAINED_QUEUE) {
+                this.decreaseQueues[bucket] = new long[initialQueueLength(TARGETED, bucket)];
+            }
         }
     }
+
+    protected static final int MAX_RETAINED_QUEUE = 1 << 16;
+
+    protected static int initialQueueLength(final boolean bucketed, final int bucket) {
+        return bucketed ? 512 : (bucket == FIFO_BUCKET ? 16 * 16 * 16 : 16);
+    }
+    // Solix end - per-level queues
 
     protected static final AxisDirection[][] OLD_CHECK_DIRECTIONS = new AxisDirection[1 << 6][];
     protected static final int ALL_DIRECTIONS_BITSET = (1 << 6) - 1;
@@ -1102,203 +1334,298 @@ public abstract class StarLightEngine {
     }
 
     protected final void performLightIncrease(final LightChunkGetter lightAccess) {
-        final BlockGetter world = lightAccess.getLevel();
-        long[] queue = this.increaseQueue;
-        int queueReadIndex = 0;
-        int queueLength = this.increaseQueueInitialLength;
-        this.increaseQueueInitialLength = 0;
+        final BlockGetter world = this.blockAccess;
+        final long[][] queues = this.increaseQueues;
+        final int[] queueLengths = this.increaseQueueLengths;
         final int decodeOffsetX = -this.encodeOffsetX;
         final int decodeOffsetY = -this.encodeOffsetY;
         final int decodeOffsetZ = -this.encodeOffsetZ;
         final int encodeOffset = this.coordinateOffset;
         final int sectionOffset = this.chunkSectionIndexOffset;
 
-        while (queueReadIndex < queueLength) {
-            final long queueValue = queue[queueReadIndex++];
-
-            final int posX = ((int)queueValue & 63) + decodeOffsetX;
-            final int posZ = (((int)queueValue >>> 6) & 63) + decodeOffsetZ;
-            final int posY = (((int)queueValue >>> 12) & ((1 << 16) - 1)) + decodeOffsetY;
-            final int propagatedLightLevel = (int)((queueValue >>> (6 + 6 + 16)) & 0xFL);
-            final AxisDirection[] checkDirections = OLD_CHECK_DIRECTIONS[(int)((queueValue >>> (6 + 6 + 16 + 4)) & 63L)];
-
-            if ((queueValue & FLAG_RECHECK_LEVEL) != 0L) {
-                if (this.getLightLevel(posX, posY, posZ) != propagatedLightLevel) {
-                    // not at the level we expect, so something changed.
-                    continue;
+        // Solix - brightest bucket first. Children always go into a lower bucket, in classic mode everything is in
+        // FIFO_BUCKET (which grows while it is processed, so the length and array are re-read for every entry)
+        for (int bucket = 15; bucket >= 0; --bucket) {
+            for (int queueReadIndex = 0; queueReadIndex < queueLengths[bucket];) {
+                final long queueValue = queues[bucket][queueReadIndex++];
+                if (LightStats.ENABLED) {
+                    ++this.statIncreasePops;
                 }
-            } else if ((queueValue & FLAG_WRITE_LEVEL) != 0L) {
-                // these are used to restore block sources after a propagation decrease
-                this.setLightLevel(posX, posY, posZ, propagatedLightLevel);
-            }
 
-            if ((queueValue & FLAG_HAS_SIDED_TRANSPARENT_BLOCKS) == 0L) {
-                // we don't need to worry about our state here.
-                for (final AxisDirection propagate : checkDirections) {
-                    final int offX = posX + propagate.x;
-                    final int offY = posY + propagate.y;
-                    final int offZ = posZ + propagate.z;
+                final int posX = ((int)queueValue & 63) + decodeOffsetX;
+                final int posZ = (((int)queueValue >>> 6) & 63) + decodeOffsetZ;
+                final int posY = (((int)queueValue >>> 12) & ((1 << 16) - 1)) + decodeOffsetY;
+                final int propagatedLightLevel = (int)((queueValue >>> (6 + 6 + 16)) & 0xFL);
+                final AxisDirection[] checkDirections = OLD_CHECK_DIRECTIONS[(int)((queueValue >>> (6 + 6 + 16 + 4)) & 63L)];
 
-                    final int sectionIndex = (offX >> 4) + 5 * (offZ >> 4) + (5 * 5) * (offY >> 4) + sectionOffset;
-                    final int localIndex = (offX & 15) | ((offZ & 15) << 4) | ((offY & 15) << 8);
-
-                    final SWMRNibbleArray currentNibble = this.nibbleCache[sectionIndex];
-                    final int currentLevel;
-                    if (currentNibble == null || (currentLevel = currentNibble.getUpdating(localIndex)) >= (propagatedLightLevel - 1)) {
-                        continue; // already at the level we want or unloaded
-                    }
-
-                    final BlockState blockState = this.getBlockState(sectionIndex, localIndex);
-                    if (blockState == null) {
+                if ((queueValue & FLAG_RECHECK_LEVEL) != 0L) {
+                    if (this.getLightLevel(posX, posY, posZ) != propagatedLightLevel) {
+                        // not at the level we expect, so something changed.
                         continue;
                     }
-                    final int opacityCached = ((ExtendedAbstractBlockState)blockState).getOpacityIfCached();
-                    if (opacityCached != -1) {
-                        final int targetLevel = propagatedLightLevel - Math.max(1, opacityCached);
-                        if (targetLevel > currentLevel) {
+                } else if ((queueValue & FLAG_WRITE_LEVEL) != 0L) {
+                    // these are used to restore block sources after a propagation decrease
+                    // Solix - never lower a block that a brighter neighbour already lit: that neighbour queued it at the
+                    // higher level (brightest-first order makes this the normal case, before it was only order dependent)
+                    if (this.getLightLevel(posX, posY, posZ) >= propagatedLightLevel) {
+                        continue;
+                    }
+                    this.setLightLevel(posX, posY, posZ, propagatedLightLevel);
+                    if (LightStats.ENABLED) {
+                        ++this.statLightWrites;
+                    }
+                }
+
+                if ((queueValue & FLAG_HAS_SIDED_TRANSPARENT_BLOCKS) == 0L) {
+                    // we don't need to worry about our state here.
+                    for (final AxisDirection propagate : checkDirections) {
+                        final int offX = posX + propagate.x;
+                        final int offY = posY + propagate.y;
+                        final int offZ = posZ + propagate.z;
+
+                        final int sectionIndex = (offX >> 4) + 5 * (offZ >> 4) + (5 * 5) * (offY >> 4) + sectionOffset;
+                        final int localIndex = (offX & 15) | ((offZ & 15) << 4) | ((offY & 15) << 8);
+
+                        final SWMRNibbleArray currentNibble = this.nibbleCache[sectionIndex];
+                        final int currentLevel;
+                        if (currentNibble == null || (currentLevel = currentNibble.getUpdating(localIndex)) >= (propagatedLightLevel - 1)) {
+                            continue; // already at the level we want or unloaded
+                        }
+
+                        final BlockState blockState = this.getBlockState(sectionIndex, localIndex);
+                        if (blockState == null) {
+                            continue;
+                        }
+                        final int opacityCached = ((ExtendedAbstractBlockState)blockState).getOpacityIfCached();
+                        if (opacityCached != -1) {
+                            final int targetLevel = propagatedLightLevel - Math.max(1, opacityCached);
+                            if (targetLevel > currentLevel) {
+                                currentNibble.set(localIndex, targetLevel);
+                                this.postLightUpdate(offX, offY, offZ);
+                                if (LightStats.ENABLED) {
+                                    ++this.statLightWrites;
+                                }
+
+                                if (targetLevel > 1) {
+                                    this.appendToIncreaseQueue(
+                                            ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
+                                                    | ((targetLevel & 0xFL) << (6 + 6 + 16))
+                                                    | (propagate.everythingButTheOppositeDirection << (6 + 6 + 16 + 4))
+                                    );
+                                    continue;
+                                }
+                            }
+                            continue;
+                        } else {
+                            this.mutablePos1.set(offX, offY, offZ);
+                            long flags = 0;
+                            if (((ExtendedAbstractBlockState)blockState).isConditionallyFullOpaque()) {
+                                final VoxelShape cullingFace = this.callFaceShape(blockState, this.mutablePos1, propagate.getOpposite().nms);
+
+                                if (Shapes.faceShapeOccludes(Shapes.empty(), cullingFace)) {
+                                    continue;
+                                }
+                                flags |= FLAG_HAS_SIDED_TRANSPARENT_BLOCKS;
+                            }
+
+                            final int opacity = this.callLightBlock(blockState, this.mutablePos1);
+                            final int targetLevel = propagatedLightLevel - Math.max(1, opacity);
+                            if (targetLevel <= currentLevel) {
+                                continue;
+                            }
+
                             currentNibble.set(localIndex, targetLevel);
                             this.postLightUpdate(offX, offY, offZ);
+                            if (LightStats.ENABLED) {
+                                ++this.statLightWrites;
+                            }
 
                             if (targetLevel > 1) {
-                                if (queueLength >= queue.length) {
-                                    queue = this.resizeIncreaseQueue();
-                                }
-                                queue[queueLength++] =
+                                this.appendToIncreaseQueue(
                                         ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
                                                 | ((targetLevel & 0xFL) << (6 + 6 + 16))
-                                                | (propagate.everythingButTheOppositeDirection << (6 + 6 + 16 + 4));
-                                continue;
+                                                | (propagate.everythingButTheOppositeDirection << (6 + 6 + 16 + 4))
+                                                | (flags)
+                                );
                             }
+                            continue;
                         }
-                        continue;
-                    } else {
-                        this.mutablePos1.set(offX, offY, offZ);
-                        long flags = 0;
-                        if (((ExtendedAbstractBlockState)blockState).isConditionallyFullOpaque()) {
-                            final VoxelShape cullingFace = blockState.getFaceOcclusionShape(world, this.mutablePos1, propagate.getOpposite().nms);
+                    }
+                } else {
+                    // we actually need to worry about our state here
+                    final BlockState fromBlock = this.getBlockState(posX, posY, posZ);
+                    this.mutablePos2.set(posX, posY, posZ);
+                    for (final AxisDirection propagate : checkDirections) {
+                        final int offX = posX + propagate.x;
+                        final int offY = posY + propagate.y;
+                        final int offZ = posZ + propagate.z;
 
-                            if (Shapes.faceShapeOccludes(Shapes.empty(), cullingFace)) {
-                                continue;
-                            }
-                            flags |= FLAG_HAS_SIDED_TRANSPARENT_BLOCKS;
-                        }
+                        final VoxelShape fromShape = (((ExtendedAbstractBlockState)fromBlock).isConditionallyFullOpaque()) ? this.callFaceShape(fromBlock, this.mutablePos2, propagate.nms) : Shapes.empty();
 
-                        final int opacity = blockState.getLightBlock(world, this.mutablePos1);
-                        final int targetLevel = propagatedLightLevel - Math.max(1, opacity);
-                        if (targetLevel <= currentLevel) {
+                        if (fromShape != Shapes.empty() && Shapes.faceShapeOccludes(Shapes.empty(), fromShape)) {
                             continue;
                         }
 
-                        currentNibble.set(localIndex, targetLevel);
-                        this.postLightUpdate(offX, offY, offZ);
+                        final int sectionIndex = (offX >> 4) + 5 * (offZ >> 4) + (5 * 5) * (offY >> 4) + sectionOffset;
+                        final int localIndex = (offX & 15) | ((offZ & 15) << 4) | ((offY & 15) << 8);
 
-                        if (targetLevel > 1) {
-                            if (queueLength >= queue.length) {
-                                queue = this.resizeIncreaseQueue();
-                            }
-                            queue[queueLength++] =
-                                    ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
-                                            | ((targetLevel & 0xFL) << (6 + 6 + 16))
-                                            | (propagate.everythingButTheOppositeDirection << (6 + 6 + 16 + 4))
-                                            | (flags);
-                        }
-                        continue;
-                    }
-                }
-            } else {
-                // we actually need to worry about our state here
-                final BlockState fromBlock = this.getBlockState(posX, posY, posZ);
-                this.mutablePos2.set(posX, posY, posZ);
-                for (final AxisDirection propagate : checkDirections) {
-                    final int offX = posX + propagate.x;
-                    final int offY = posY + propagate.y;
-                    final int offZ = posZ + propagate.z;
+                        final SWMRNibbleArray currentNibble = this.nibbleCache[sectionIndex];
+                        final int currentLevel;
 
-                    final VoxelShape fromShape = (((ExtendedAbstractBlockState)fromBlock).isConditionallyFullOpaque()) ? fromBlock.getFaceOcclusionShape(world, this.mutablePos2, propagate.nms) : Shapes.empty();
-
-                    if (fromShape != Shapes.empty() && Shapes.faceShapeOccludes(Shapes.empty(), fromShape)) {
-                        continue;
-                    }
-
-                    final int sectionIndex = (offX >> 4) + 5 * (offZ >> 4) + (5 * 5) * (offY >> 4) + sectionOffset;
-                    final int localIndex = (offX & 15) | ((offZ & 15) << 4) | ((offY & 15) << 8);
-
-                    final SWMRNibbleArray currentNibble = this.nibbleCache[sectionIndex];
-                    final int currentLevel;
-
-                    if (currentNibble == null || (currentLevel = currentNibble.getUpdating(localIndex)) >= (propagatedLightLevel - 1)) {
-                        continue; // already at the level we want
-                    }
-
-                    final BlockState blockState = this.getBlockState(sectionIndex, localIndex);
-                    if (blockState == null) {
-                        continue;
-                    }
-                    final int opacityCached = ((ExtendedAbstractBlockState)blockState).getOpacityIfCached();
-                    if (opacityCached != -1) {
-                        final int targetLevel = propagatedLightLevel - Math.max(1, opacityCached);
-                        if (targetLevel > currentLevel) {
-                            currentNibble.set(localIndex, targetLevel);
-                            this.postLightUpdate(offX, offY, offZ);
-
-                            if (targetLevel > 1) {
-                                if (queueLength >= queue.length) {
-                                    queue = this.resizeIncreaseQueue();
-                                }
-                                queue[queueLength++] =
-                                        ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
-                                                | ((targetLevel & 0xFL) << (6 + 6 + 16))
-                                                | (propagate.everythingButTheOppositeDirection << (6 + 6 + 16 + 4));
-                                continue;
-                            }
-                        }
-                        continue;
-                    } else {
-                        this.mutablePos1.set(offX, offY, offZ);
-                        long flags = 0;
-                        if (((ExtendedAbstractBlockState)blockState).isConditionallyFullOpaque()) {
-                            final VoxelShape cullingFace = blockState.getFaceOcclusionShape(world, this.mutablePos1, propagate.getOpposite().nms);
-
-                            if (Shapes.faceShapeOccludes(fromShape, cullingFace)) {
-                                continue;
-                            }
-                            flags |= FLAG_HAS_SIDED_TRANSPARENT_BLOCKS;
+                        if (currentNibble == null || (currentLevel = currentNibble.getUpdating(localIndex)) >= (propagatedLightLevel - 1)) {
+                            continue; // already at the level we want
                         }
 
-                        final int opacity = blockState.getLightBlock(world, this.mutablePos1);
-                        final int targetLevel = propagatedLightLevel - Math.max(1, opacity);
-                        if (targetLevel <= currentLevel) {
+                        final BlockState blockState = this.getBlockState(sectionIndex, localIndex);
+                        if (blockState == null) {
                             continue;
                         }
+                        final int opacityCached = ((ExtendedAbstractBlockState)blockState).getOpacityIfCached();
+                        if (opacityCached != -1) {
+                            final int targetLevel = propagatedLightLevel - Math.max(1, opacityCached);
+                            if (targetLevel > currentLevel) {
+                                currentNibble.set(localIndex, targetLevel);
+                                this.postLightUpdate(offX, offY, offZ);
+                                if (LightStats.ENABLED) {
+                                    ++this.statLightWrites;
+                                }
 
-                        currentNibble.set(localIndex, targetLevel);
-                        this.postLightUpdate(offX, offY, offZ);
-
-                        if (targetLevel > 1) {
-                            if (queueLength >= queue.length) {
-                                queue = this.resizeIncreaseQueue();
+                                if (targetLevel > 1) {
+                                    this.appendToIncreaseQueue(
+                                            ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
+                                                    | ((targetLevel & 0xFL) << (6 + 6 + 16))
+                                                    | (propagate.everythingButTheOppositeDirection << (6 + 6 + 16 + 4))
+                                    );
+                                    continue;
+                                }
                             }
-                            queue[queueLength++] =
-                                    ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
-                                            | ((targetLevel & 0xFL) << (6 + 6 + 16))
-                                            | (propagate.everythingButTheOppositeDirection << (6 + 6 + 16 + 4))
-                                            | (flags);
+                            continue;
+                        } else {
+                            this.mutablePos1.set(offX, offY, offZ);
+                            long flags = 0;
+                            if (((ExtendedAbstractBlockState)blockState).isConditionallyFullOpaque()) {
+                                final VoxelShape cullingFace = this.callFaceShape(blockState, this.mutablePos1, propagate.getOpposite().nms);
+
+                                if (Shapes.faceShapeOccludes(fromShape, cullingFace)) {
+                                    continue;
+                                }
+                                flags |= FLAG_HAS_SIDED_TRANSPARENT_BLOCKS;
+                            }
+
+                            final int opacity = this.callLightBlock(blockState, this.mutablePos1);
+                            final int targetLevel = propagatedLightLevel - Math.max(1, opacity);
+                            if (targetLevel <= currentLevel) {
+                                continue;
+                            }
+
+                            currentNibble.set(localIndex, targetLevel);
+                            this.postLightUpdate(offX, offY, offZ);
+                            if (LightStats.ENABLED) {
+                                ++this.statLightWrites;
+                            }
+
+                            if (targetLevel > 1) {
+                                this.appendToIncreaseQueue(
+                                        ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
+                                                | ((targetLevel & 0xFL) << (6 + 6 + 16))
+                                                | (propagate.everythingButTheOppositeDirection << (6 + 6 + 16 + 4))
+                                                | (flags)
+                                );
+                            }
+                            continue;
                         }
-                        continue;
                     }
                 }
             }
+            queueLengths[bucket] = 0;
         }
     }
 
+    // Solix start - targeted decrease
+    // The classic (Seed of Andromeda) decrease darkens every neighbour whose level could have come from the decreased
+    // block and then re-lights the area from its border. Placing an opaque block in a lit room therefore darkens and
+    // re-lights the whole region behind it, although nearly every block there is also lit along another path of the
+    // same length. With TARGETED such neighbours are queued as candidates (FLAG_CHECK_SUPPORT) at their own level, and
+    // the decrease queue is processed brightest bucket first. A candidate is only darkened when neither its own emission
+    // nor any face-open neighbour still provides its level; otherwise it keeps its light and is queued to re-light its
+    // darkened neighbours. This is sound because candidates only ever queue dimmer candidates: when a bucket is
+    // processed, every brighter block is final, blocks that lost their light already read 0, and any other non-zero
+    // neighbour is a valid light path. The block a light level came from is never stored, it follows from the light
+    // values themselves.
+    // Below a removed light source nearly every block loses its light, so there the support checks would only cost time:
+    // such seeds carry FLAG_DARKEN_ALL and darken classically. Mixing both kinds in one pass is safe, as a classic entry
+    // only darkens blocks dimmer than its own bucket, which never invalidates a support decision already made.
+
+    // decrease flags for a changed block whose light was `level` before the change: without a brighter neighbour the
+    // block was a light source itself (or the brightest point around it), so darken below it classically
+    protected final long getSeedDecreaseFlags(final int worldX, final int worldY, final int worldZ, final int level) {
+        if (!TARGETED || level == 0) {
+            return 0L;
+        }
+        for (final AxisDirection direction : AXIS_DIRECTIONS) {
+            if (this.getLightLevel(worldX + direction.x, worldY + direction.y, worldZ + direction.z) > level) {
+                return 0L;
+            }
+        }
+        return FLAG_DARKEN_ALL;
+    }
+
+    protected final boolean hasSupportingNeighbour(final BlockGetter world, final long queueValue, final int posX,
+                                                   final int posY, final int posZ, final int neededLevel) {
+        if (neededLevel > 15) {
+            return false;
+        }
+        final int sectionOffset = this.chunkSectionIndexOffset;
+        // the candidate is conditionally opaque when it carries the sided flag, its faces then matter too
+        final BlockState centerState = (queueValue & FLAG_HAS_SIDED_TRANSPARENT_BLOCKS) != 0L ? this.getBlockState(posX, posY, posZ) : null;
+        final boolean centerConditional = centerState != null && ((ExtendedAbstractBlockState)centerState).isConditionallyFullOpaque();
+
+        for (final AxisDirection direction : AXIS_DIRECTIONS) {
+            final int offX = posX + direction.x;
+            final int offY = posY + direction.y;
+            final int offZ = posZ + direction.z;
+
+            final int sectionIndex = (offX >> 4) + 5 * (offZ >> 4) + (5 * 5) * (offY >> 4) + sectionOffset;
+            final int localIndex = (offX & 15) | ((offZ & 15) << 4) | ((offY & 15) << 8);
+
+            if (this.getLightLevel(sectionIndex, localIndex) < neededLevel) {
+                continue;
+            }
+
+            final BlockState neighbourState = this.getBlockState(sectionIndex, localIndex);
+            final boolean neighbourConditional = ((ExtendedAbstractBlockState)neighbourState).isConditionallyFullOpaque();
+            if (centerConditional | neighbourConditional) {
+                // same face rules as the increase propagating from the neighbour into this block
+                final VoxelShape neighbourFace;
+                if (neighbourConditional) {
+                    this.mutablePos1.set(offX, offY, offZ);
+                    neighbourFace = this.callFaceShape(neighbourState, this.mutablePos1, direction.getOpposite().nms);
+                } else {
+                    neighbourFace = Shapes.empty();
+                }
+                final VoxelShape centerFace;
+                if (centerConditional) {
+                    this.mutablePos2.set(posX, posY, posZ);
+                    centerFace = this.callFaceShape(centerState, this.mutablePos2, direction.nms);
+                } else {
+                    centerFace = Shapes.empty();
+                }
+                if (Shapes.faceShapeOccludes(neighbourFace, centerFace)) {
+                    continue;
+                }
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+    // Solix end - targeted decrease
+
     protected final void performLightDecrease(final LightChunkGetter lightAccess) {
-        final BlockGetter world = lightAccess.getLevel();
-        long[] queue = this.decreaseQueue;
-        long[] increaseQueue = this.increaseQueue;
-        int queueReadIndex = 0;
-        int queueLength = this.decreaseQueueInitialLength;
-        this.decreaseQueueInitialLength = 0;
-        int increaseQueueLength = this.increaseQueueInitialLength;
+        final BlockGetter world = this.blockAccess;
+        final long[][] queues = this.decreaseQueues;
+        final int[] queueLengths = this.decreaseQueueLengths;
         final int decodeOffsetX = -this.encodeOffsetX;
         final int decodeOffsetY = -this.encodeOffsetY;
         final int decodeOffsetZ = -this.encodeOffsetZ;
@@ -1306,274 +1633,374 @@ public abstract class StarLightEngine {
         final int sectionOffset = this.chunkSectionIndexOffset;
         final int emittedMask = this.emittedLightMask;
 
-        while (queueReadIndex < queueLength) {
-            final long queueValue = queue[queueReadIndex++];
-
-            final int posX = ((int)queueValue & 63) + decodeOffsetX;
-            final int posZ = (((int)queueValue >>> 6) & 63) + decodeOffsetZ;
-            final int posY = (((int)queueValue >>> 12) & ((1 << 16) - 1)) + decodeOffsetY;
-            final int propagatedLightLevel = (int)((queueValue >>> (6 + 6 + 16)) & 0xF);
-            final AxisDirection[] checkDirections = OLD_CHECK_DIRECTIONS[(int)((queueValue >>> (6 + 6 + 16 + 4)) & 63)];
-
-            if ((queueValue & FLAG_HAS_SIDED_TRANSPARENT_BLOCKS) == 0L) {
-                // we don't need to worry about our state here.
-                for (final AxisDirection propagate : checkDirections) {
-                    final int offX = posX + propagate.x;
-                    final int offY = posY + propagate.y;
-                    final int offZ = posZ + propagate.z;
-
-                    final int sectionIndex = (offX >> 4) + 5 * (offZ >> 4) + (5 * 5) * (offY >> 4) + sectionOffset;
-                    final int localIndex = (offX & 15) | ((offZ & 15) << 4) | ((offY & 15) << 8);
-
-                    final SWMRNibbleArray currentNibble = this.nibbleCache[sectionIndex];
-                    final int lightLevel;
-
-                    if (currentNibble == null || (lightLevel = currentNibble.getUpdating(localIndex)) == 0) {
-                        // already at lowest (or unloaded), nothing we can do
-                        continue;
-                    }
-
-                    final BlockState blockState = this.getBlockState(sectionIndex, localIndex);
-                    if (blockState == null) {
-                        continue;
-                    }
-                    final int opacityCached = ((ExtendedAbstractBlockState)blockState).getOpacityIfCached();
-                    if (opacityCached != -1) {
-                        final int targetLevel = Math.max(0, propagatedLightLevel - Math.max(1, opacityCached));
-                        if (lightLevel > targetLevel) {
-                            // it looks like another source propagated here, so re-propagate it
-                            if (increaseQueueLength >= increaseQueue.length) {
-                                increaseQueue = this.resizeIncreaseQueue();
-                            }
-                            increaseQueue[increaseQueueLength++] =
-                                    ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
-                                            | ((lightLevel & 0xFL) << (6 + 6 + 16))
-                                            | (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4))
-                                            | FLAG_RECHECK_LEVEL;
-                            continue;
-                        }
-                        // Solix - opacity is only cached (!= -1) for blocks without positional Forge emission
-                        // (see BlockStateBaseMixin), so the position-less emission is the real one here
-                        final int emittedLight = blockState.getLightEmission() & emittedMask;
-                        if (emittedLight != 0) {
-                            // re-propagate source
-                            // note: do not set recheck level, or else the propagation will fail
-                            if (increaseQueueLength >= increaseQueue.length) {
-                                increaseQueue = this.resizeIncreaseQueue();
-                            }
-                            increaseQueue[increaseQueueLength++] =
-                                    ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
-                                            | ((emittedLight & 0xFL) << (6 + 6 + 16))
-                                            | (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4))
-                                            | (((ExtendedAbstractBlockState)blockState).isConditionallyFullOpaque() ? (FLAG_WRITE_LEVEL | FLAG_HAS_SIDED_TRANSPARENT_BLOCKS) : FLAG_WRITE_LEVEL);
-                        }
-
-                        currentNibble.set(localIndex, 0);
-                        this.postLightUpdate(offX, offY, offZ);
-
-                        if (targetLevel > 0) { // we actually need to propagate 0 just in case we find a neighbour...
-                            if (queueLength >= queue.length) {
-                                queue = this.resizeDecreaseQueue();
-                            }
-                            queue[queueLength++] =
-                                    ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
-                                            | ((targetLevel & 0xFL) << (6 + 6 + 16))
-                                            | ((propagate.everythingButTheOppositeDirection) << (6 + 6 + 16 + 4));
-                            continue;
-                        }
-                        continue;
-                    } else {
-                        this.mutablePos1.set(offX, offY, offZ);
-                        long flags = 0;
-                        if (((ExtendedAbstractBlockState)blockState).isConditionallyFullOpaque()) {
-                            final VoxelShape cullingFace = blockState.getFaceOcclusionShape(world, this.mutablePos1, propagate.getOpposite().nms);
-
-                            if (Shapes.faceShapeOccludes(Shapes.empty(), cullingFace)) {
-                                continue;
-                            }
-                            flags |= FLAG_HAS_SIDED_TRANSPARENT_BLOCKS;
-                        }
-
-                        final int opacity = blockState.getLightBlock(world, this.mutablePos1);
-                        final int targetLevel = Math.max(0, propagatedLightLevel - Math.max(1, opacity));
-                        if (lightLevel > targetLevel) {
-                            // it looks like another source propagated here, so re-propagate it
-                            if (increaseQueueLength >= increaseQueue.length) {
-                                increaseQueue = this.resizeIncreaseQueue();
-                            }
-                            increaseQueue[increaseQueueLength++] =
-                                    ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
-                                            | ((lightLevel & 0xFL) << (6 + 6 + 16))
-                                            | (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4))
-                                            | (FLAG_RECHECK_LEVEL | flags);
-                            continue;
-                        }
-                        final int emittedLight = blockState.getLightEmission(world, this.mutablePos1) & emittedMask; // Forge
-                        if (emittedLight != 0) {
-                            // re-propagate source
-                            // note: do not set recheck level, or else the propagation will fail
-                            if (increaseQueueLength >= increaseQueue.length) {
-                                increaseQueue = this.resizeIncreaseQueue();
-                            }
-                            increaseQueue[increaseQueueLength++] =
-                                    ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
-                                            | ((emittedLight & 0xFL) << (6 + 6 + 16))
-                                            | (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4))
-                                            | (flags | FLAG_WRITE_LEVEL);
-                        }
-
-                        currentNibble.set(localIndex, 0);
-                        this.postLightUpdate(offX, offY, offZ);
-
-                        if (targetLevel > 0) {
-                            if (queueLength >= queue.length) {
-                                queue = this.resizeDecreaseQueue();
-                            }
-                            queue[queueLength++] =
-                                    ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
-                                            | ((targetLevel & 0xFL) << (6 + 6 + 16))
-                                            | ((propagate.everythingButTheOppositeDirection) << (6 + 6 + 16 + 4))
-                                            | flags;
-                        }
-                        continue;
-                    }
+        // Solix - brightest bucket first (targeted), or the single FIFO_BUCKET (classic/ordered)
+        for (int bucket = 15; bucket >= 0; --bucket) {
+            for (int queueReadIndex = 0; queueReadIndex < queueLengths[bucket];) {
+                final long queueValue = queues[bucket][queueReadIndex++];
+                if (LightStats.ENABLED) {
+                    ++this.statDecreasePops;
                 }
-            } else {
-                // we actually need to worry about our state here
-                final BlockState fromBlock = this.getBlockState(posX, posY, posZ);
-                this.mutablePos2.set(posX, posY, posZ);
-                for (final AxisDirection propagate : checkDirections) {
-                    final int offX = posX + propagate.x;
-                    final int offY = posY + propagate.y;
-                    final int offZ = posZ + propagate.z;
 
-                    final int sectionIndex = (offX >> 4) + 5 * (offZ >> 4) + (5 * 5) * (offY >> 4) + sectionOffset;
-                    final int localIndex = (offX & 15) | ((offZ & 15) << 4) | ((offY & 15) << 8);
+                final int posX = ((int)queueValue & 63) + decodeOffsetX;
+                final int posZ = (((int)queueValue >>> 6) & 63) + decodeOffsetZ;
+                final int posY = (((int)queueValue >>> 12) & ((1 << 16) - 1)) + decodeOffsetY;
+                final int propagatedLightLevel = (int)((queueValue >>> (6 + 6 + 16)) & 0xF);
+                final AxisDirection[] checkDirections = OLD_CHECK_DIRECTIONS[(int)((queueValue >>> (6 + 6 + 16 + 4)) & 63)];
 
-                    final VoxelShape fromShape = (((ExtendedAbstractBlockState)fromBlock).isConditionallyFullOpaque()) ? fromBlock.getFaceOcclusionShape(world, this.mutablePos2, propagate.nms) : Shapes.empty();
-
-                    if (fromShape != Shapes.empty() && Shapes.faceShapeOccludes(Shapes.empty(), fromShape)) {
+                // Solix start - targeted decrease: decide whether a candidate lost its light
+                if (TARGETED && (queueValue & FLAG_CHECK_SUPPORT) != 0L) {
+                    final int sectionIndex = (posX >> 4) + 5 * (posZ >> 4) + (5 * 5) * (posY >> 4) + sectionOffset;
+                    final int localIndex = (posX & 15) | ((posZ & 15) << 4) | ((posY & 15) << 8);
+                    final SWMRNibbleArray nibble = this.nibbleCache[sectionIndex];
+                    if (nibble == null || nibble.getUpdating(localIndex) != propagatedLightLevel) {
+                        // already darkened through another neighbour
                         continue;
                     }
-
-                    final SWMRNibbleArray currentNibble = this.nibbleCache[sectionIndex];
-                    final int lightLevel;
-
-                    if (currentNibble == null || (lightLevel = currentNibble.getUpdating(localIndex)) == 0) {
-                        // already at lowest (or unloaded), nothing we can do
+                    final int emittedLight = (int)((queueValue >>> (6 + 6 + 16 + 4 + 6 + 4)) & 0xFL);
+                    final int attenuation = (int)((queueValue >>> (6 + 6 + 16 + 4 + 6)) & 0xFL);
+                    if (emittedLight >= propagatedLightLevel
+                            || this.hasSupportingNeighbour(world, queueValue, posX, posY, posZ, propagatedLightLevel + attenuation)) {
+                        // still lit: keep the level, and re-light the block that queued it (the one direction the
+                        // entry does not check). Other darkened neighbours either queue this block again or re-check it
+                        // in all directions, and a seed that queued it with light left has its own source entry
+                        if (LightStats.ENABLED) {
+                            ++this.statCandidatesKept;
+                        }
+                        this.appendToIncreaseQueue(
+                                (queueValue & ((1L << (6 + 6 + 16 + 4)) - 1)) // position and level
+                                        | ((~queueValue) & (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4)))
+                                        | FLAG_RECHECK_LEVEL
+                                        | (queueValue & FLAG_HAS_SIDED_TRANSPARENT_BLOCKS)
+                        );
                         continue;
                     }
-
-                    final BlockState blockState = this.getBlockState(sectionIndex, localIndex);
-                    if (blockState == null) {
-                        continue;
+                    if (LightStats.ENABLED) {
+                        ++this.statCandidatesDarkened;
+                        ++this.statLightWrites;
                     }
-                    final int opacityCached = ((ExtendedAbstractBlockState)blockState).getOpacityIfCached();
-                    if (opacityCached != -1) {
-                        final int targetLevel = Math.max(0, propagatedLightLevel - Math.max(1, opacityCached));
-                        if (lightLevel > targetLevel) {
-                            // it looks like another source propagated here, so re-propagate it
-                            if (increaseQueueLength >= increaseQueue.length) {
-                                increaseQueue = this.resizeIncreaseQueue();
-                            }
-                            increaseQueue[increaseQueueLength++] =
-                                    ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
-                                            | ((lightLevel & 0xFL) << (6 + 6 + 16))
-                                            | (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4))
-                                            | FLAG_RECHECK_LEVEL;
+                    if (emittedLight != 0) {
+                        // re-propagate source
+                        // note: do not set recheck level, or else the propagation will fail
+                        this.appendToIncreaseQueue(
+                                (queueValue & ((1L << (6 + 6 + 16)) - 1)) // position
+                                        | ((emittedLight & 0xFL) << (6 + 6 + 16))
+                                        | (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4))
+                                        | FLAG_WRITE_LEVEL
+                                        | (queueValue & FLAG_HAS_SIDED_TRANSPARENT_BLOCKS)
+                        );
+                    }
+                    nibble.set(localIndex, 0);
+                    this.postLightUpdate(posX, posY, posZ);
+                    // now darken its neighbours like any decrease entry at this level
+                }
+                // Solix end - targeted decrease
+
+                if ((queueValue & FLAG_HAS_SIDED_TRANSPARENT_BLOCKS) == 0L) {
+                    // we don't need to worry about our state here.
+                    for (final AxisDirection propagate : checkDirections) {
+                        final int offX = posX + propagate.x;
+                        final int offY = posY + propagate.y;
+                        final int offZ = posZ + propagate.z;
+
+                        final int sectionIndex = (offX >> 4) + 5 * (offZ >> 4) + (5 * 5) * (offY >> 4) + sectionOffset;
+                        final int localIndex = (offX & 15) | ((offZ & 15) << 4) | ((offY & 15) << 8);
+
+                        final SWMRNibbleArray currentNibble = this.nibbleCache[sectionIndex];
+                        final int lightLevel;
+
+                        if (currentNibble == null || (lightLevel = currentNibble.getUpdating(localIndex)) == 0) {
+                            // already at lowest (or unloaded), nothing we can do
                             continue;
                         }
-                        // Solix - opacity is only cached (!= -1) for blocks without positional Forge emission
-                        // (see BlockStateBaseMixin), so the position-less emission is the real one here
-                        final int emittedLight = blockState.getLightEmission() & emittedMask;
-                        if (emittedLight != 0) {
-                            // re-propagate source
-                            // note: do not set recheck level, or else the propagation will fail
-                            if (increaseQueueLength >= increaseQueue.length) {
-                                increaseQueue = this.resizeIncreaseQueue();
-                            }
-                            increaseQueue[increaseQueueLength++] =
-                                    ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
-                                            | ((emittedLight & 0xFL) << (6 + 6 + 16))
-                                            | (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4))
-                                            | (((ExtendedAbstractBlockState)blockState).isConditionallyFullOpaque() ? (FLAG_WRITE_LEVEL | FLAG_HAS_SIDED_TRANSPARENT_BLOCKS) : FLAG_WRITE_LEVEL);
-                        }
 
-                        currentNibble.set(localIndex, 0);
-                        this.postLightUpdate(offX, offY, offZ);
-
-                        if (targetLevel > 0) { // we actually need to propagate 0 just in case we find a neighbour...
-                            if (queueLength >= queue.length) {
-                                queue = this.resizeDecreaseQueue();
-                            }
-                            queue[queueLength++] =
-                                    ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
-                                            | ((targetLevel & 0xFL) << (6 + 6 + 16))
-                                            | ((propagate.everythingButTheOppositeDirection) << (6 + 6 + 16 + 4));
+                        final BlockState blockState = this.getBlockState(sectionIndex, localIndex);
+                        if (blockState == null) {
                             continue;
                         }
-                        continue;
-                    } else {
-                        this.mutablePos1.set(offX, offY, offZ);
-                        long flags = 0;
-                        if (((ExtendedAbstractBlockState)blockState).isConditionallyFullOpaque()) {
-                            final VoxelShape cullingFace = blockState.getFaceOcclusionShape(world, this.mutablePos1, propagate.getOpposite().nms);
-
-                            if (Shapes.faceShapeOccludes(fromShape, cullingFace)) {
+                        final int opacityCached = ((ExtendedAbstractBlockState)blockState).getOpacityIfCached();
+                        if (opacityCached != -1) {
+                            final int targetLevel = Math.max(0, propagatedLightLevel - Math.max(1, opacityCached));
+                            if (lightLevel > targetLevel) {
+                                // it looks like another source propagated here, so re-propagate it
+                                this.appendToIncreaseQueue(
+                                        ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
+                                                | ((lightLevel & 0xFL) << (6 + 6 + 16))
+                                                | (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4))
+                                                | FLAG_RECHECK_LEVEL
+                                );
                                 continue;
                             }
-                            flags |= FLAG_HAS_SIDED_TRANSPARENT_BLOCKS;
-                        }
-
-                        final int opacity = blockState.getLightBlock(world, this.mutablePos1);
-                        final int targetLevel = Math.max(0, propagatedLightLevel - Math.max(1, opacity));
-                        if (lightLevel > targetLevel) {
-                            // it looks like another source propagated here, so re-propagate it
-                            if (increaseQueueLength >= increaseQueue.length) {
-                                increaseQueue = this.resizeIncreaseQueue();
+                            // Solix - opacity is only cached (!= -1) for blocks without positional Forge emission
+                            // (see BlockStateBaseMixin), so the position-less emission is the real one here
+                            final int emittedLight = blockState.getLightEmission() & emittedMask;
+                            // Solix start - targeted decrease: queue as a candidate at its own level instead of darkening it now
+                            if (TARGETED && (queueValue & FLAG_DARKEN_ALL) == 0L) {
+                                this.appendToDecreaseQueue(
+                                        ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
+                                                | ((lightLevel & 0xFL) << (6 + 6 + 16))
+                                                | ((propagate.everythingButTheOppositeDirection) << (6 + 6 + 16 + 4))
+                                                | ((long)Math.min(15, Math.max(1, opacityCached)) << (6 + 6 + 16 + 4 + 6)) // Solix (0.3.4) - 4-bit field, mods may report > 15
+                                                | ((long)emittedLight << (6 + 6 + 16 + 4 + 6 + 4))
+                                                | FLAG_CHECK_SUPPORT
+                                );
+                                continue;
                             }
-                            increaseQueue[increaseQueueLength++] =
-                                    ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
-                                            | ((lightLevel & 0xFL) << (6 + 6 + 16))
-                                            | (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4))
-                                            | (FLAG_RECHECK_LEVEL | flags);
+                            // Solix end - targeted decrease
+                            if (emittedLight != 0) {
+                                // re-propagate source
+                                // note: do not set recheck level, or else the propagation will fail
+                                this.appendToIncreaseQueue(
+                                        ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
+                                                | ((emittedLight & 0xFL) << (6 + 6 + 16))
+                                                | (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4))
+                                                | (((ExtendedAbstractBlockState)blockState).isConditionallyFullOpaque() ? (FLAG_WRITE_LEVEL | FLAG_HAS_SIDED_TRANSPARENT_BLOCKS) : FLAG_WRITE_LEVEL)
+                                );
+                            }
+
+                            currentNibble.set(localIndex, 0);
+                            this.postLightUpdate(offX, offY, offZ);
+                            if (LightStats.ENABLED) {
+                                ++this.statLightWrites;
+                            }
+
+                            if (targetLevel > 0) { // we actually need to propagate 0 just in case we find a neighbour...
+                                this.appendToDecreaseQueue(
+                                        ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
+                                                | ((targetLevel & 0xFL) << (6 + 6 + 16))
+                                                | ((propagate.everythingButTheOppositeDirection) << (6 + 6 + 16 + 4))
+                                                | (queueValue & FLAG_DARKEN_ALL) // Solix - targeted decrease
+                                );
+                                continue;
+                            }
+                            continue;
+                        } else {
+                            this.mutablePos1.set(offX, offY, offZ);
+                            long flags = 0;
+                            if (((ExtendedAbstractBlockState)blockState).isConditionallyFullOpaque()) {
+                                final VoxelShape cullingFace = this.callFaceShape(blockState, this.mutablePos1, propagate.getOpposite().nms);
+
+                                if (Shapes.faceShapeOccludes(Shapes.empty(), cullingFace)) {
+                                    continue;
+                                }
+                                flags |= FLAG_HAS_SIDED_TRANSPARENT_BLOCKS;
+                            }
+
+                            final int opacity = this.callLightBlock(blockState, this.mutablePos1);
+                            final int targetLevel = Math.max(0, propagatedLightLevel - Math.max(1, opacity));
+                            if (lightLevel > targetLevel) {
+                                // it looks like another source propagated here, so re-propagate it
+                                this.appendToIncreaseQueue(
+                                        ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
+                                                | ((lightLevel & 0xFL) << (6 + 6 + 16))
+                                                | (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4))
+                                                | (FLAG_RECHECK_LEVEL | flags)
+                                );
+                                continue;
+                            }
+                            final int emittedLight = this.callEmission(blockState, this.mutablePos1) & emittedMask; // Forge
+                            // Solix start - targeted decrease: queue as a candidate at its own level instead of darkening it now
+                            if (TARGETED && (queueValue & FLAG_DARKEN_ALL) == 0L) {
+                                this.appendToDecreaseQueue(
+                                        ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
+                                                | ((lightLevel & 0xFL) << (6 + 6 + 16))
+                                                | ((propagate.everythingButTheOppositeDirection) << (6 + 6 + 16 + 4))
+                                                | ((long)Math.min(15, Math.max(1, opacity)) << (6 + 6 + 16 + 4 + 6)) // Solix (0.3.4) - 4-bit field, mods may report > 15
+                                                | ((long)emittedLight << (6 + 6 + 16 + 4 + 6 + 4))
+                                                | flags
+                                                | FLAG_CHECK_SUPPORT
+                                );
+                                continue;
+                            }
+                            // Solix end - targeted decrease
+                            if (emittedLight != 0) {
+                                // re-propagate source
+                                // note: do not set recheck level, or else the propagation will fail
+                                this.appendToIncreaseQueue(
+                                        ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
+                                                | ((emittedLight & 0xFL) << (6 + 6 + 16))
+                                                | (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4))
+                                                | (flags | FLAG_WRITE_LEVEL)
+                                );
+                            }
+
+                            currentNibble.set(localIndex, 0);
+                            this.postLightUpdate(offX, offY, offZ);
+                            if (LightStats.ENABLED) {
+                                ++this.statLightWrites;
+                            }
+
+                            if (targetLevel > 0) {
+                                this.appendToDecreaseQueue(
+                                        ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
+                                                | ((targetLevel & 0xFL) << (6 + 6 + 16))
+                                                | ((propagate.everythingButTheOppositeDirection) << (6 + 6 + 16 + 4))
+                                                | (queueValue & FLAG_DARKEN_ALL) // Solix - targeted decrease
+                                                | flags
+                                );
+                            }
                             continue;
                         }
-                        final int emittedLight = blockState.getLightEmission(world, this.mutablePos1) & emittedMask; // Forge
-                        if (emittedLight != 0) {
-                            // re-propagate source
-                            // note: do not set recheck level, or else the propagation will fail
-                            if (increaseQueueLength >= increaseQueue.length) {
-                                increaseQueue = this.resizeIncreaseQueue();
-                            }
-                            increaseQueue[increaseQueueLength++] =
-                                    ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
-                                            | ((emittedLight & 0xFL) << (6 + 6 + 16))
-                                            | (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4))
-                                            | (flags | FLAG_WRITE_LEVEL);
+                    }
+                } else {
+                    // we actually need to worry about our state here
+                    final BlockState fromBlock = this.getBlockState(posX, posY, posZ);
+                    this.mutablePos2.set(posX, posY, posZ);
+                    for (final AxisDirection propagate : checkDirections) {
+                        final int offX = posX + propagate.x;
+                        final int offY = posY + propagate.y;
+                        final int offZ = posZ + propagate.z;
+
+                        final int sectionIndex = (offX >> 4) + 5 * (offZ >> 4) + (5 * 5) * (offY >> 4) + sectionOffset;
+                        final int localIndex = (offX & 15) | ((offZ & 15) << 4) | ((offY & 15) << 8);
+
+                        final VoxelShape fromShape = (((ExtendedAbstractBlockState)fromBlock).isConditionallyFullOpaque()) ? this.callFaceShape(fromBlock, this.mutablePos2, propagate.nms) : Shapes.empty();
+
+                        if (fromShape != Shapes.empty() && Shapes.faceShapeOccludes(Shapes.empty(), fromShape)) {
+                            continue;
                         }
 
-                        currentNibble.set(localIndex, 0);
-                        this.postLightUpdate(offX, offY, offZ);
+                        final SWMRNibbleArray currentNibble = this.nibbleCache[sectionIndex];
+                        final int lightLevel;
 
-                        if (targetLevel > 0) { // we actually need to propagate 0 just in case we find a neighbour...
-                            if (queueLength >= queue.length) {
-                                queue = this.resizeDecreaseQueue();
-                            }
-                            queue[queueLength++] =
-                                    ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
-                                            | ((targetLevel & 0xFL) << (6 + 6 + 16))
-                                            | ((propagate.everythingButTheOppositeDirection) << (6 + 6 + 16 + 4))
-                                            | flags;
+                        if (currentNibble == null || (lightLevel = currentNibble.getUpdating(localIndex)) == 0) {
+                            // already at lowest (or unloaded), nothing we can do
+                            continue;
                         }
-                        continue;
+
+                        final BlockState blockState = this.getBlockState(sectionIndex, localIndex);
+                        if (blockState == null) {
+                            continue;
+                        }
+                        final int opacityCached = ((ExtendedAbstractBlockState)blockState).getOpacityIfCached();
+                        if (opacityCached != -1) {
+                            final int targetLevel = Math.max(0, propagatedLightLevel - Math.max(1, opacityCached));
+                            if (lightLevel > targetLevel) {
+                                // it looks like another source propagated here, so re-propagate it
+                                this.appendToIncreaseQueue(
+                                        ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
+                                                | ((lightLevel & 0xFL) << (6 + 6 + 16))
+                                                | (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4))
+                                                | FLAG_RECHECK_LEVEL
+                                );
+                                continue;
+                            }
+                            // Solix - opacity is only cached (!= -1) for blocks without positional Forge emission
+                            // (see BlockStateBaseMixin), so the position-less emission is the real one here
+                            final int emittedLight = blockState.getLightEmission() & emittedMask;
+                            // Solix start - targeted decrease: queue as a candidate at its own level instead of darkening it now
+                            if (TARGETED && (queueValue & FLAG_DARKEN_ALL) == 0L) {
+                                this.appendToDecreaseQueue(
+                                        ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
+                                                | ((lightLevel & 0xFL) << (6 + 6 + 16))
+                                                | ((propagate.everythingButTheOppositeDirection) << (6 + 6 + 16 + 4))
+                                                | ((long)Math.min(15, Math.max(1, opacityCached)) << (6 + 6 + 16 + 4 + 6)) // Solix (0.3.4) - 4-bit field, mods may report > 15
+                                                | ((long)emittedLight << (6 + 6 + 16 + 4 + 6 + 4))
+                                                | FLAG_CHECK_SUPPORT
+                                );
+                                continue;
+                            }
+                            // Solix end - targeted decrease
+                            if (emittedLight != 0) {
+                                // re-propagate source
+                                // note: do not set recheck level, or else the propagation will fail
+                                this.appendToIncreaseQueue(
+                                        ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
+                                                | ((emittedLight & 0xFL) << (6 + 6 + 16))
+                                                | (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4))
+                                                | (((ExtendedAbstractBlockState)blockState).isConditionallyFullOpaque() ? (FLAG_WRITE_LEVEL | FLAG_HAS_SIDED_TRANSPARENT_BLOCKS) : FLAG_WRITE_LEVEL)
+                                );
+                            }
+
+                            currentNibble.set(localIndex, 0);
+                            this.postLightUpdate(offX, offY, offZ);
+                            if (LightStats.ENABLED) {
+                                ++this.statLightWrites;
+                            }
+
+                            if (targetLevel > 0) { // we actually need to propagate 0 just in case we find a neighbour...
+                                this.appendToDecreaseQueue(
+                                        ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
+                                                | ((targetLevel & 0xFL) << (6 + 6 + 16))
+                                                | ((propagate.everythingButTheOppositeDirection) << (6 + 6 + 16 + 4))
+                                                | (queueValue & FLAG_DARKEN_ALL) // Solix - targeted decrease
+                                );
+                                continue;
+                            }
+                            continue;
+                        } else {
+                            this.mutablePos1.set(offX, offY, offZ);
+                            long flags = 0;
+                            if (((ExtendedAbstractBlockState)blockState).isConditionallyFullOpaque()) {
+                                final VoxelShape cullingFace = this.callFaceShape(blockState, this.mutablePos1, propagate.getOpposite().nms);
+
+                                if (Shapes.faceShapeOccludes(fromShape, cullingFace)) {
+                                    continue;
+                                }
+                                flags |= FLAG_HAS_SIDED_TRANSPARENT_BLOCKS;
+                            }
+
+                            final int opacity = this.callLightBlock(blockState, this.mutablePos1);
+                            final int targetLevel = Math.max(0, propagatedLightLevel - Math.max(1, opacity));
+                            if (lightLevel > targetLevel) {
+                                // it looks like another source propagated here, so re-propagate it
+                                this.appendToIncreaseQueue(
+                                        ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
+                                                | ((lightLevel & 0xFL) << (6 + 6 + 16))
+                                                | (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4))
+                                                | (FLAG_RECHECK_LEVEL | flags)
+                                );
+                                continue;
+                            }
+                            final int emittedLight = this.callEmission(blockState, this.mutablePos1) & emittedMask; // Forge
+                            // Solix start - targeted decrease: queue as a candidate at its own level instead of darkening it now
+                            if (TARGETED && (queueValue & FLAG_DARKEN_ALL) == 0L) {
+                                this.appendToDecreaseQueue(
+                                        ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
+                                                | ((lightLevel & 0xFL) << (6 + 6 + 16))
+                                                | ((propagate.everythingButTheOppositeDirection) << (6 + 6 + 16 + 4))
+                                                | ((long)Math.min(15, Math.max(1, opacity)) << (6 + 6 + 16 + 4 + 6)) // Solix (0.3.4) - 4-bit field, mods may report > 15
+                                                | ((long)emittedLight << (6 + 6 + 16 + 4 + 6 + 4))
+                                                | flags
+                                                | FLAG_CHECK_SUPPORT
+                                );
+                                continue;
+                            }
+                            // Solix end - targeted decrease
+                            if (emittedLight != 0) {
+                                // re-propagate source
+                                // note: do not set recheck level, or else the propagation will fail
+                                this.appendToIncreaseQueue(
+                                        ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
+                                                | ((emittedLight & 0xFL) << (6 + 6 + 16))
+                                                | (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4))
+                                                | (flags | FLAG_WRITE_LEVEL)
+                                );
+                            }
+
+                            currentNibble.set(localIndex, 0);
+                            this.postLightUpdate(offX, offY, offZ);
+                            if (LightStats.ENABLED) {
+                                ++this.statLightWrites;
+                            }
+
+                            if (targetLevel > 0) { // we actually need to propagate 0 just in case we find a neighbour...
+                                this.appendToDecreaseQueue(
+                                        ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
+                                                | ((targetLevel & 0xFL) << (6 + 6 + 16))
+                                                | ((propagate.everythingButTheOppositeDirection) << (6 + 6 + 16 + 4))
+                                                | (queueValue & FLAG_DARKEN_ALL) // Solix - targeted decrease
+                                                | flags
+                                );
+                            }
+                            continue;
+                        }
                     }
                 }
             }
+            queueLengths[bucket] = 0;
         }
 
         // propagate sources we clobbered
-        this.increaseQueueInitialLength = increaseQueueLength;
         this.performLightIncrease(lightAccess);
     }
 }

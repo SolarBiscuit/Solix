@@ -5,6 +5,7 @@ import net.minecraft.server.level.WorldGenRegion;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.WorldGenLevel;
 import net.minecraft.world.level.chunk.ChunkAccess;
+import net.minecraft.world.level.chunk.ChunkStatus;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 
@@ -12,7 +13,7 @@ import org.spongepowered.asm.mixin.Shadow;
 public abstract class WorldGenRegionMixin implements WorldGenLevel {
 
     @Shadow
-    public abstract ChunkAccess getChunk(int i, int j);
+    public abstract ChunkAccess getChunk(int i, int j, ChunkStatus status, boolean nonnull);
 
     /**
      * @reason During feature generation, light data is not initialised and will always return 15 in Starlight. Vanilla
@@ -24,8 +25,9 @@ public abstract class WorldGenRegionMixin implements WorldGenLevel {
      */
     @Override
     public int getBrightness(final LightLayer lightLayer, final BlockPos blockPos) {
-        final ChunkAccess chunk = this.getChunk(blockPos.getX() >> 4, blockPos.getZ() >> 4);
-        if (!chunk.isLightCorrect()) {
+        // Solix (0.3.2) - the 2-argument getChunk throws outside the region; vanilla's brightness never did
+        final ChunkAccess chunk = this.getChunk(blockPos.getX() >> 4, blockPos.getZ() >> 4, ChunkStatus.EMPTY, false);
+        if (chunk == null || !chunk.isLightCorrect()) {
             return 0;
         }
         return this.getLightEngine().getLayerListener(lightLayer).getLightValue(blockPos);
@@ -37,8 +39,9 @@ public abstract class WorldGenRegionMixin implements WorldGenLevel {
      */
     @Override
     public int getRawBrightness(final BlockPos blockPos, final int subtract) {
-        final ChunkAccess chunk = this.getChunk(blockPos.getX() >> 4, blockPos.getZ() >> 4);
-        if (!chunk.isLightCorrect()) {
+        // Solix (0.3.2) - the 2-argument getChunk throws outside the region; vanilla's brightness never did
+        final ChunkAccess chunk = this.getChunk(blockPos.getX() >> 4, blockPos.getZ() >> 4, ChunkStatus.EMPTY, false);
+        if (chunk == null || !chunk.isLightCorrect()) {
             return 0;
         }
         return this.getLightEngine().getRawBrightness(blockPos, subtract);

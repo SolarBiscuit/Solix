@@ -52,8 +52,8 @@ public final class SkyStarLightEngine extends StarLightEngine {
 
     protected final boolean[] nullPropagationCheckCache;
 
-    public SkyStarLightEngine(final Level world) {
-        super(true, world);
+    public SkyStarLightEngine(final Level world, final boolean isClientSide, final LightChunkGetter lightAccess) {
+        super(true, world, isClientSide, lightAccess);
         this.nullPropagationCheckCache = new boolean[WorldUtil.getTotalLightSections(world)];
     }
 
@@ -287,6 +287,7 @@ public final class SkyStarLightEngine extends StarLightEngine {
                 ((worldX + (worldZ << 6) + (worldY << (6 + 6)) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
                         | (currentLevel & 0xFL) << (6 + 6 + 16)
                         | (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4))
+                        | this.getSeedDecreaseFlags(worldX, worldY, worldZ, currentLevel) // Solix - targeted decrease
         );
     }
 
@@ -307,7 +308,7 @@ public final class SkyStarLightEngine extends StarLightEngine {
         final BlockState conditionallyOpaqueState;
         if (opacity < 0) {
             this.recalcCenterPos.set(worldX, worldY, worldZ);
-            opacity = Math.max(1, centerState.getLightBlock(lightAccess.getLevel(), this.recalcCenterPos));
+            opacity = Math.max(1, this.callLightBlock(centerState, this.recalcCenterPos));
             if (((ExtendedAbstractBlockState)centerState).isConditionallyFullOpaque()) {
                 conditionallyOpaqueState = centerState;
             } else {
@@ -341,8 +342,8 @@ public final class SkyStarLightEngine extends StarLightEngine {
                 // we don't read the blockstate because most of the time this is false, so using the faster
                 // known transparency lookup results in a net win
                 this.recalcNeighbourPos.set(offX, offY, offZ);
-                final VoxelShape neighbourFace = neighbourState.getFaceOcclusionShape(lightAccess.getLevel(), this.recalcNeighbourPos, direction.opposite.nms);
-                final VoxelShape thisFace = conditionallyOpaqueState == null ? Shapes.empty() : conditionallyOpaqueState.getFaceOcclusionShape(lightAccess.getLevel(), this.recalcCenterPos, direction.nms);
+                final VoxelShape neighbourFace = this.callFaceShape(neighbourState, this.recalcNeighbourPos, direction.opposite.nms);
+                final VoxelShape thisFace = conditionallyOpaqueState == null ? Shapes.empty() : this.callFaceShape(conditionallyOpaqueState, this.recalcCenterPos, direction.nms);
                 if (Shapes.faceShapeOccludes(thisFace, neighbourFace)) {
                     // not allowed to propagate
                     continue;
@@ -364,7 +365,7 @@ public final class SkyStarLightEngine extends StarLightEngine {
         this.rewriteNibbleCacheForSkylight(atChunk);
         Arrays.fill(this.nullPropagationCheckCache, false);
 
-        final BlockGetter world = lightAccess.getLevel();
+        final BlockGetter world = this.blockAccess;
         final int chunkX = atChunk.getPos().x;
         final int chunkZ = atChunk.getPos().z;
         final int heightMapOffset = chunkX * -16 + (chunkZ * (-16 * 16));
@@ -434,6 +435,7 @@ public final class SkyStarLightEngine extends StarLightEngine {
                                     | (15L << (6 + 6 + 16))
                                     | (propagateDirection << (6 + 6 + 16 + 4))
                                     // do not set transparent blocks for the same reason we don't in the checkBlock method
+                                    | (TARGETED ? FLAG_DARKEN_ALL : 0L) // Solix - targeted decrease: a removed sky source
                     );
                 }
             }
@@ -451,14 +453,15 @@ public final class SkyStarLightEngine extends StarLightEngine {
         this.performLightDecrease(lightAccess);
     }
 
-    protected final int[] heightMapGen = new int[32 * 32];
+    // Solix (0.3.4) - unused upstream leftover (4 KB per sky engine), nothing reads or writes it
+    // protected final int[] heightMapGen = new int[32 * 32];
 
     @Override
     protected void lightChunk(final LightChunkGetter lightAccess, final ChunkAccess chunk, final boolean needsEdgeChecks) {
         this.rewriteNibbleCacheForSkylight(chunk);
         Arrays.fill(this.nullPropagationCheckCache, false);
 
-        final BlockGetter world = lightAccess.getLevel();
+        final BlockGetter world = this.blockAccess;
         final ChunkPos chunkPos = chunk.getPos();
         final int chunkX = chunkPos.x;
         final int chunkZ = chunkPos.z;
@@ -570,38 +573,42 @@ public final class SkyStarLightEngine extends StarLightEngine {
 
     protected final void processDelayedIncreases() {
         // copied from performLightIncrease
-        final long[] queue = this.increaseQueue;
         final int decodeOffsetX = -this.encodeOffsetX;
         final int decodeOffsetY = -this.encodeOffsetY;
         final int decodeOffsetZ = -this.encodeOffsetZ;
 
-        for (int i = 0, len = this.increaseQueueInitialLength; i < len; ++i) {
-            final long queueValue = queue[i];
+        for (int bucket = 0; bucket < 16; ++bucket) { // Solix - per-level queues
+            final long[] queue = this.increaseQueues[bucket];
+            for (int i = 0, len = this.increaseQueueLengths[bucket]; i < len; ++i) {
+                final long queueValue = queue[i];
 
-            final int posX = ((int)queueValue & 63) + decodeOffsetX;
-            final int posZ = (((int)queueValue >>> 6) & 63) + decodeOffsetZ;
-            final int posY = (((int)queueValue >>> 12) & ((1 << 16) - 1)) + decodeOffsetY;
-            final int propagatedLightLevel = (int)((queueValue >>> (6 + 6 + 16)) & 0xF);
+                final int posX = ((int)queueValue & 63) + decodeOffsetX;
+                final int posZ = (((int)queueValue >>> 6) & 63) + decodeOffsetZ;
+                final int posY = (((int)queueValue >>> 12) & ((1 << 16) - 1)) + decodeOffsetY;
+                final int propagatedLightLevel = (int)((queueValue >>> (6 + 6 + 16)) & 0xF);
 
-            this.setLightLevel(posX, posY, posZ, propagatedLightLevel);
+                this.setLightLevel(posX, posY, posZ, propagatedLightLevel);
+            }
         }
     }
 
     protected final void processDelayedDecreases() {
         // copied from performLightDecrease
-        final long[] queue = this.decreaseQueue;
         final int decodeOffsetX = -this.encodeOffsetX;
         final int decodeOffsetY = -this.encodeOffsetY;
         final int decodeOffsetZ = -this.encodeOffsetZ;
 
-        for (int i = 0, len = this.decreaseQueueInitialLength; i < len; ++i) {
-            final long queueValue = queue[i];
+        for (int bucket = 0; bucket < 16; ++bucket) { // Solix - per-level queues
+            final long[] queue = this.decreaseQueues[bucket];
+            for (int i = 0, len = this.decreaseQueueLengths[bucket]; i < len; ++i) {
+                final long queueValue = queue[i];
 
-            final int posX = ((int)queueValue & 63) + decodeOffsetX;
-            final int posZ = (((int)queueValue >>> 6) & 63) + decodeOffsetZ;
-            final int posY = (((int)queueValue >>> 12) & ((1 << 16) - 1)) + decodeOffsetY;
+                final int posX = ((int)queueValue & 63) + decodeOffsetX;
+                final int posZ = (((int)queueValue >>> 6) & 63) + decodeOffsetZ;
+                final int posY = (((int)queueValue >>> 12) & ((1 << 16) - 1)) + decodeOffsetY;
 
-            this.setLightLevel(posX, posY, posZ, 0);
+                this.setLightLevel(posX, posY, posZ, 0);
+            }
         }
     }
 
@@ -633,7 +640,7 @@ public final class SkyStarLightEngine extends StarLightEngine {
             final VoxelShape fromShape;
             if (((ExtendedAbstractBlockState)above).isConditionallyFullOpaque()) {
                 this.mutablePos2.set(worldX, startY + 1, worldZ);
-                fromShape = above.getFaceOcclusionShape(world, this.mutablePos2, AxisDirection.NEGATIVE_Y.nms);
+                fromShape = this.callFaceShape(above, this.mutablePos2, AxisDirection.NEGATIVE_Y.nms);
                 if (Shapes.faceShapeOccludes(Shapes.empty(), fromShape)) {
                     // above wont let us propagate
                     break;
@@ -661,7 +668,7 @@ public final class SkyStarLightEngine extends StarLightEngine {
                 mutablePos.set(worldX, startY, worldZ);
                 long flags = 0L;
                 if (((ExtendedAbstractBlockState)current).isConditionallyFullOpaque()) {
-                    final VoxelShape cullingFace = current.getFaceOcclusionShape(world, mutablePos, AxisDirection.POSITIVE_Y.nms);
+                    final VoxelShape cullingFace = this.callFaceShape(current, mutablePos, AxisDirection.POSITIVE_Y.nms);
 
                     if (Shapes.faceShapeOccludes(fromShape, cullingFace)) {
                         // can't propagate here, we're done on this column.
@@ -670,7 +677,7 @@ public final class SkyStarLightEngine extends StarLightEngine {
                     flags |= FLAG_HAS_SIDED_TRANSPARENT_BLOCKS;
                 }
 
-                final int opacity = current.getLightBlock(world, mutablePos);
+                final int opacity = this.callLightBlock(current, mutablePos);
                 if (opacity > 0) {
                     // let the queued value (if any) handle it from here.
                     break;
@@ -692,7 +699,7 @@ public final class SkyStarLightEngine extends StarLightEngine {
                 // can propagate through air.
 
                 // nothing can propagate in null sections, remove the queue entry for it
-                --this.increaseQueueInitialLength;
+                this.removeLastFromIncreaseQueue(15); // Solix - per-level queues
 
                 // advance currY to the the top of the section below
                 startY = (startY) & (~15);

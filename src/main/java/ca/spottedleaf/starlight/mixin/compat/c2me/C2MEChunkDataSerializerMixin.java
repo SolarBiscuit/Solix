@@ -25,4 +25,10 @@ public abstract class C2MEChunkDataSerializerMixin {
         }
         return modList.isLoaded(modId);
     }
+
+    // Solix (0.3.4) - 0.3.2 made C2ME write Solix's light version 9 instead of its hard-coded 8. Reverted: C2ME's Starlight
+    // writer also saves the light sections below and above the world (minLightSection, maxLightSection) without their
+    // own section compound, so they end up merged into a neighbouring tag. With version 8 Solix relights such chunks on
+    // load, which repairs them; with version 9 the broken edge sections were kept. Only relevant with C2ME's
+    // ioSystem.gcFreeChunkSerializer, which RatPack keeps off (C2ME forge.9.8 disables it entirely).
 }

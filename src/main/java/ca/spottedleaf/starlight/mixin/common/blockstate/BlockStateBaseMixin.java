@@ -4,8 +4,6 @@ import ca.spottedleaf.starlight.common.blockstate.ExtendedAbstractBlockState;
 import ca.spottedleaf.starlight.common.blockstate.PositionalEmission;
 import com.google.common.collect.ImmutableMap;
 import com.mojang.serialization.MapCodec;
-import net.minecraft.core.BlockPos;
-import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockBehaviour;
 import net.minecraft.world.level.block.state.BlockState;
@@ -39,8 +37,10 @@ public abstract class BlockStateBaseMixin extends StateHolder<Block, BlockState>
     @Unique
     private int opacityIfCached = -1; // Solix - start at "not cached": ModernFix may build the cache lazily
 
-    @Unique
-    private boolean isPositionAwareEmission; // Solix
+    // Solix (0.3.4) - the isPositionAwareEmission field was only read by its getter, which nothing called; it is a
+    // local in initLightAccessState now (one boolean less per block state)
+    // @Unique
+    // private boolean isPositionAwareEmission; // Solix
 
     protected BlockStateBaseMixin(final Block object, final ImmutableMap<Property<?>, Comparable<?>> immutableMap, final MapCodec<BlockState> mapCodec) {
         super(object, immutableMap, mapCodec);
@@ -59,9 +59,9 @@ public abstract class BlockStateBaseMixin extends StateHolder<Block, BlockState>
         // position (dynamic shape: no vanilla cache) or when the cached fast paths would use the position-less light
         // emission for a block that overrides Forge's positional getLightEmission. In every other case
         // getLightBlock(level, pos) returns cache.lightBlock (computed by vanilla at EmptyBlockGetter/BlockPos.ZERO).
-        this.isPositionAwareEmission = PositionalEmission.isPositionAware(this.getBlock().getClass());
+        final boolean isPositionAwareEmission = PositionalEmission.isPositionAware(this.getBlock().getClass());
         this.opacityIfCached = this.cache == null || this.getBlock().hasDynamicShape() || this.isConditionallyFullOpaque()
-                || this.isPositionAwareEmission ? -1 : this.cache.lightBlock;
+                || isPositionAwareEmission ? -1 : this.cache.lightBlock;
         // Solix end - Forge-correct opacity cache
     }
 
@@ -77,8 +77,9 @@ public abstract class BlockStateBaseMixin extends StateHolder<Block, BlockState>
         return this.opacityIfCached;
     }
 
-    @Override
-    public final boolean isPositionAwareEmission() {
-        return this.isPositionAwareEmission;
-    }
+    // Solix (0.3.4) - unused, see ExtendedAbstractBlockState
+    // @Override
+    // public final boolean isPositionAwareEmission() {
+    //     return this.isPositionAwareEmission;
+    // }
 }
