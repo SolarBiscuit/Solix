@@ -17,7 +17,8 @@
     "common.world.LevelMixin",
     "common.world.ServerWorldMixin",
     "common.world.WorldGenRegionMixin",
-    "compat.c2me.C2MEChunkDataSerializerMixin"
+    "compat.c2me.C2MEChunkDataSerializerMixin",
+    "debug.MinecraftServerDebugMixin"
   ],
   "client": [
     "client.multiplayer.ClientPacketListenerMixin",

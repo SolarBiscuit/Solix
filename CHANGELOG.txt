@@ -1,6 +1,31 @@
 Solix changelog
 ===============
 
+0.3.7+fabric (2026-11-08)
+First Fabric 1.20.1 release (branch fabric-1.20.1). Same light engine as Forge 0.3.7; only the loader layer differs.
+- Fabric Loader 0.14.21+ on Minecraft 1.20.1, no Fabric API needed. Mod id solix; it also provides the id "starlight",
+  so Fabric mods with Starlight support turn it on: Bobby (light of its cached fake chunks, through its mixin on
+  StarLightInterface$1/$2) and C2ME's fast chunk serializer (writes Starlight's light format). A real Starlight jar is
+  refused by Fabric Loader (duplicate id); ScalableLux and Phosphor are declared as breaking, as is Sinytra Connector
+  (use the Forge jar there).
+- Porting Lib positional light emission: blocks overriding LightEmissiveBlock#getLightEmission(state, level, pos)
+  (Forge's positional emission ported to Fabric, used by Forge ports such as Create Fabric) are handled like Forge's
+  positional emission: real emission at the position, no cached fast path, the 0.3.6 light view and the 0.3.7
+  ClassCastException fallback. Porting Lib only hooks it into the vanilla light engine, which Solix replaces. Without
+  Porting Lib every block uses its per-state emission (vanilla behaviour).
+- The 0.3.6 light view (safe_light_view) is kept: vanilla getLightBlock/getFaceOcclusionShape of dynamic-shape blocks
+  are positional too, and off-thread ServerChunkCache#getChunk waits on the server thread on Fabric as well. Its
+  block entity lookup reads the chunk's block entity map directly (Forge: getExistingBlockEntity, same map).
+- config/solix.toml in Fabric's config folder, same keys and defaults.
+- Debug properties: -Dsolix.debug.sectionTypes and -Dsolix.debug.positionalEmission log once the levels are loaded.
+- Access widener instead of the access transformer. The Forge AT's two ChunkHolder entries (f_140018_, f_142982_) are
+  inherited from Starlight Forge and unused, so they have no counterpart.
+- Compatibility scan of the SolPack Fabric instances (208 jars): Sodium (Inject at RETURN of applyLightData and
+  handleForgetLevelChunk, kept by Solix's client mixin), C2ME 0.2.0+alpha.11 (threading-lighting hooks a
+  tryScheduleUpdate lambda Solix does not overwrite; serializer resolves SWMRNibbleArray/SaveState/ExtendedChunk by
+  name, all kept), ModernFix, Lithium, VMP, Fabric API, Architectury, Cardinal Components: no conflicting target. No
+  scanned mod puts a version condition on "starlight".
+
 0.3.7 (2026-11-04)
 Fixes from a full audit after the Age of Fate #149 deadlock (0.3.6).
 - A chunk's light ticket is now released even when lighting that chunk throws (a mod's light callback, for example).

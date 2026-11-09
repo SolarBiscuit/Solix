@@ -1,7 +1,7 @@
 package ca.spottedleaf.starlight.common.config;
 
 import com.mojang.logging.LogUtils;
-import net.minecraftforge.fml.loading.FMLPaths;
+import net.fabricmc.loader.api.FabricLoader;
 import org.slf4j.Logger;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -84,7 +84,7 @@ public final class SolixConfig {
         boolean readExisting = false;
         String existingText = null;
         try {
-            path = FMLPaths.CONFIGDIR.get().resolve(FILE_NAME);
+            path = FabricLoader.getInstance().getConfigDir().resolve(FILE_NAME);
             if (Files.isRegularFile(path)) {
                 // Solix (0.3.4) - decoded leniently: a file saved in another encoding (e.g. an accented comment written
                 // by an ANSI editor) used to throw and drop every setting back to the default

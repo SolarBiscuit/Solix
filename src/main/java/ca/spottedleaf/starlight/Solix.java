@@ -7,41 +7,28 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.LightLayer;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.lighting.LayerLightSectionStorage;
 import net.minecraft.world.level.lighting.LevelLightEngine;
-import net.minecraftforge.common.MinecraftForge;
-import net.minecraftforge.event.server.ServerStartedEvent;
-import net.minecraft.world.level.block.Block;
-import net.minecraftforge.fml.IExtensionPoint;
-import net.minecraftforge.fml.ModLoadingContext;
-import net.minecraftforge.fml.common.Mod;
-import net.minecraftforge.fml.event.lifecycle.FMLLoadCompleteEvent;
-import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
-import net.minecraftforge.network.NetworkConstants;
 import org.slf4j.Logger;
 import java.util.EnumMap;
 import java.util.TreeSet;
 
-@Mod(Solix.MOD_ID)
+/**
+ * Solix (Fabric): no entrypoint is needed, everything is done by mixins (like upstream Starlight Fabric). Fabric has no
+ * server/client mod handshake, so Solix stays network compatible both ways without any registration.
+ * <p>
+ * {@code -Dsolix.debug.sectionTypes=true} logs the light section types around spawn and
+ * {@code -Dsolix.debug.positionalEmission=true} the blocks with position-aware (Porting Lib) light emission, once the
+ * levels are loaded (MinecraftServerDebugMixin, applied only with one of these properties).
+ * </p>
+ */
 public final class Solix {
 
     public static final String MOD_ID = "solix";
     private static final Logger LOGGER = LogUtils.getLogger();
 
-    public Solix() {
-        // like starlight, solix is network compatible both ways
-        ModLoadingContext.get().registerExtensionPoint(IExtensionPoint.DisplayTest.class, () -> {
-            return new IExtensionPoint.DisplayTest(() -> NetworkConstants.IGNORESERVERONLY, (a, b) -> true);
-        });
-        if (Boolean.getBoolean("solix.debug.sectionTypes")) {
-            MinecraftForge.EVENT_BUS.addListener((final ServerStartedEvent event) -> logSectionTypes(event.getServer().overworld()));
-        }
-        if (Boolean.getBoolean("solix.debug.positionalEmission")) {
-            FMLJavaModLoadingContext.get().getModEventBus().addListener((final FMLLoadCompleteEvent event) -> logPositionalEmission());
-        }
-    }
-
-    private static void logSectionTypes(final ServerLevel level) {
+    public static void logSectionTypes(final ServerLevel level) {
         final EnumMap<LayerLightSectionStorage.SectionType, Integer> block = new EnumMap<>(LayerLightSectionStorage.SectionType.class);
         final EnumMap<LayerLightSectionStorage.SectionType, Integer> sky = new EnumMap<>(LayerLightSectionStorage.SectionType.class);
         final ChunkPos spawn = new ChunkPos(level.getSharedSpawnPos());
@@ -58,7 +45,7 @@ public final class Solix {
         LOGGER.info("Solix: getDebugSectionType around spawn (9x9 chunks): block {} sky {}", block, sky);
     }
 
-    private static void logPositionalEmission() {
+    public static void logPositionalEmission() {
         final TreeSet<String> aware = new TreeSet<>();
         int blocks = 0;
         for (final Block block : BuiltInRegistries.BLOCK) {
@@ -72,4 +59,6 @@ public final class Solix {
             LOGGER.info("Solix: position-aware emission: {}", s);
         }
     }
+
+    private Solix() {}
 }

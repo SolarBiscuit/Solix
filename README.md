@@ -1,12 +1,14 @@
 <p align="center">
-  <img src="docs/logo/solix-banner.png" alt="Solix: a faster light engine for Minecraft Forge 1.20.1" width="100%">
+  <img src="docs/logo/solix-banner.png" alt="Solix: a faster light engine for Minecraft 1.20.1" width="100%">
 </p>
 
 # Solix
 
-Solix is a light engine for Minecraft 1.20.1 on Forge. It is built on [Starlight](https://github.com/PaperMC/Starlight)'s rewrite of the vanilla light engine and ScalableLux's parallel scheduler, and it **does less work in the first place**: same lighting as vanilla, with fewer blocks touched, fewer light packets sent and fewer chunk re-renders on the client.
+Solix is a light engine for Minecraft 1.20.1 on Forge and Fabric. It is built on [Starlight](https://github.com/PaperMC/Starlight)'s rewrite of the vanilla light engine and ScalableLux's parallel scheduler, and it **does less work in the first place**: same lighting as vanilla, with fewer blocks touched, fewer light packets sent and fewer chunk re-renders on the client.
 
 > **Works on the client, the server, or both.** Vanilla clients can join a Solix server and the other way round, and worlds stay compatible with Starlight 1.1.2 in both directions (same saved light format). Solix replaces Starlight, ScalableLux and Lucis: do not install them alongside it.
+
+> **This is the Fabric edition** (branch `fabric-1.20.1`). Forge is the primary version; the Fabric edition gets the Forge changes in occasional backports and carries the version of the Forge release it matches (`0.3.7+fabric` = Forge 0.3.7). Differences from Forge are listed in [`docs/FABRIC.md`](docs/FABRIC.md).
 
 ## Features
 
@@ -36,7 +38,9 @@ Solix is a light engine for Minecraft 1.20.1 on Forge. It is built on [Starlight
 ### Compatibility and safety
 
 - **Same lighting.** Every release is checked by relighting a test world, applying block edits and comparing the saved light block by block with the previous release. One config line, `propagation = classic`, switches back to Starlight's original algorithm.
-- **Checked against the RatPack 2.9 mod list** (about 450 mods, including C2ME, ModernFix, Radium, Embeddium and Xenon, Oculus, NeoVoxy, Flywheel and Create, Mekanism and AE2), and run on a dedicated server with C2ME and ModernFix.
+- **Fabric: checked against the SolPack Fabric mod lists** (about 200 mods, including Sodium, Iris, Lithium, C2ME, ModernFix, FerriteCore, Krypton, VMP, Bobby, Xaero's maps and Porting Lib mods). Solix provides the mod id `starlight`, so mods with Starlight support (Bobby, C2ME) use it.
+- **Fabric: Porting Lib light.** Blocks of Forge ports that use Porting Lib's position-dependent light emission (as Create's copycats do on Forge) keep their light; Porting Lib only hooks it into the vanilla engine.
+- **Checked against the RatPack 2.9 mod list** (Forge) (about 450 mods, including C2ME, ModernFix, Radium, Embeddium and Xenon, Oculus, NeoVoxy, Flywheel and Create, Mekanism and AE2), and run on a dedicated server with C2ME and ModernFix.
 - **Old worlds are safe.** Worlds lit by vanilla are relit automatically the first time their chunks load.
 
 ## Performance
@@ -71,14 +75,15 @@ Solix has no feature roadmap beyond this. It changes only what a measurement jus
 
 ## Requirements
 
-- Minecraft **1.20.1** with Forge **47.x**
+- Minecraft **1.20.1** with Fabric Loader **0.14.21** or newer (Quilt works too). Fabric API is not needed.
 - Java **17** or newer
-- Not compatible with Starlight, ScalableLux or Lucis. Forge tells you if more than one is installed.
+- Not compatible with Starlight, ScalableLux or Phosphor. Fabric Loader tells you if more than one is installed.
+- Under Sinytra Connector (Fabric mods on Forge) use the Forge jar instead.
 
 ## Installation
 
-1. Remove Starlight, ScalableLux and Lucis if you have them.
-2. Place `solix-<version>-mc1.20.1-forge.jar` in `mods`, on the server, the client, or both.
+1. Remove Starlight, ScalableLux and Phosphor if you have them.
+2. Place `solix-<version>-mc1.20.1-fabric.jar` in `mods`, on the server, the client, or both.
 3. Options are in `config/solix.toml`, and a restart applies them:
 
 ```toml
@@ -95,7 +100,7 @@ safe_light_view = true   # give other mods' light callbacks a view that never wa
 ./gradlew build
 ```
 
-It needs a JDK 17 and writes `build/libs/solix-<version>-mc1.20.1-forge.jar`.
+It needs a local JDK 17 and writes `build/libs/solix-<version>-mc1.20.1-fabric.jar` (Fabric Loom, Mojang mappings).
 
 ## Licence and attribution
 
@@ -103,7 +108,7 @@ It needs a JDK 17 and writes `build/libs/solix-<version>-mc1.20.1-forge.jar`.
 - Solix is a modified version of, and contains code from, [Starlight](https://github.com/PaperMC/Starlight) (Forge branch, Starlight Forge 1.1.2 plus later fixes) by Spottedleaf, and [ScalableLux](https://github.com/RelativityMC/ScalableLux) by RelativityMC and ishland, both LGPL-3.0-only. The Java packages `ca.spottedleaf.starlight.*` are kept unchanged for compatibility with mods that reflect on them.
 - The task executor is [FlowSched](https://github.com/RelativityMC/FlowSched) by RelativityMC and ishland, vendored under the MIT licence ([`LICENSE-FlowSched.txt`](LICENSE-FlowSched.txt)).
 - [`NOTICE`](NOTICE) lists the sources, and [`CHANGELOG.txt`](CHANGELOG.txt) lists the changes made for Solix. [`TECHNICAL_DETAILS.md`](TECHNICAL_DETAILS.md) is Starlight's own write-up of the light engine, kept from upstream.
-- Solix is an independent project. It is not affiliated with, endorsed by, or supported by Spottedleaf, PaperMC, RelativityMC, Mojang Studios, Microsoft or Minecraft Forge.
+- Solix is an independent project. It is not affiliated with, endorsed by, or supported by Spottedleaf, PaperMC, RelativityMC, Mojang Studios, Microsoft, Minecraft Forge or FabricMC.
 
 ## Reporting issues
 

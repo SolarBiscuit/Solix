@@ -1,6 +1,7 @@
 package ca.spottedleaf.starlight.common.light;
 
 import ca.spottedleaf.starlight.common.blockstate.ExtendedAbstractBlockState;
+import ca.spottedleaf.starlight.common.blockstate.PositionalEmission;
 import ca.spottedleaf.starlight.common.config.SolixConfig;
 import ca.spottedleaf.starlight.common.util.CoordinateUtils;
 import ca.spottedleaf.starlight.common.util.IntegerUtil;
@@ -163,20 +164,25 @@ public abstract class StarLightEngine {
     // Solix (0.3.7) - all calls into mods' position-aware light code go through these three. If a mod's code casts the
     // BlockGetter it is given to Level (or similar) and fails with a ClassCastException, that block class is
     // remembered and is given the real level from then on, as in 0.3.5 and before (see LightViewFallback).
+    // Solix (Fabric) - vanilla/Fabric light emission is per block state; only blocks overriding Porting Lib's positional
+    // emission (Forge's API ported to Fabric, see PositionalEmission) have mod code to call here.
     protected final int callEmission(final BlockState state, final BlockPos pos) {
+        if (!PositionalEmission.isPositionAware(state)) {
+            return state.getLightEmission();
+        }
         final BlockGetter access = this.blockAccess;
         if (access != this.world) {
             if (LightViewFallback.useRealLevel(state)) {
-                return state.getLightEmission(this.world, pos);
+                return PositionalEmission.getLightEmission(state, this.world, pos);
             }
             try {
-                return state.getLightEmission(access, pos);
+                return PositionalEmission.getLightEmission(state, access, pos);
             } catch (final ClassCastException ex) {
                 LightViewFallback.record(state, ex);
-                return state.getLightEmission(this.world, pos);
+                return PositionalEmission.getLightEmission(state, this.world, pos);
             }
         }
-        return state.getLightEmission(access, pos);
+        return PositionalEmission.getLightEmission(state, access, pos);
     }
 
     protected final int callLightBlock(final BlockState state, final BlockPos pos) {

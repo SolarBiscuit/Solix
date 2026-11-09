@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "id": "${mod_id}",
+  "version": "${mod_version}",
+  "name": "${mod_name}",
+  "description": "${mod_description}",
+  "authors": [
+    "SolarBiscuit"
+  ],
+  "contributors": [
+    "Spottedleaf (Starlight)",
+    "RelativityMC / ishland (ScalableLux, FlowSched)"
+  ],
+  "contact": {
+    "sources": "https://github.com/SolarBiscuit/Solix",
+    "issues": "https://github.com/SolarBiscuit/Solix/issues"
+  },
+  "license": "${mod_license}",
+  "icon": "assets/solix/icon.png",
+  "environment": "*",
+  "entrypoints": {},
+  "mixins": [
+    "solix.mixins.json"
+  ],
+  "accessWidener": "solix.accesswidener",
+  "provides": [
+    "starlight"
+  ],
+  "depends": {
+    "fabricloader": ">=${loader_version_min}",
+    "minecraft": "${minecraft_version_range}",
+    "java": ">=17"
+  },
+  "breaks": {
+    "scalablelux": "*",
+    "phosphor": "*",
+    "connectormod": "*"
+  }
+}

@@ -1,19 +1,15 @@
 pluginManagement {
     repositories {
+        maven {
+            name = 'Fabric'
+            url = 'https://maven.fabricmc.net/'
+        }
         gradlePluginPortal()
-        maven {
-            name = 'MinecraftForge'
-            url = 'https://maven.minecraftforge.net/'
-        }
-        maven {
-            name = 'Sponge'
-            url = 'https://repo.spongepowered.org/repository/maven-public/'
-        }
+        mavenCentral()
     }
 }
 
-plugins {
-    id 'org.gradle.toolchains.foojay-resolver-convention' version '0.7.0'
-}
+// No foojay toolchain resolver here: foojay 0.7.0 puts Gson 2.9.1 on the build classpath, which breaks Loom 1.7
+// (Gson < 2.10 cannot read records). Building needs a local JDK 17.
 
 rootProject.name = 'solix'

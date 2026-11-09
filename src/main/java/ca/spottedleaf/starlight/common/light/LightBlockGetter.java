@@ -53,10 +53,11 @@ public final class LightBlockGetter implements BlockGetter {
         if (chunk == null) {
             return null;
         }
-        // Solix (0.3.7) - Forge's lookup of an already registered block entity. LevelChunk#getBlockEntity would also
-        // promote a pending block entity (registering a ticker with the level) and drop removed ones from the map,
-        // which only the server thread may do.
-        final BlockEntity blockEntity = chunk.getExistingBlockEntity(pos);
+        // Solix (0.3.7) - lookup of an already registered block entity (Forge: getExistingBlockEntity; Fabric: the
+        // chunk's map directly, which is what Forge's method reads). LevelChunk#getBlockEntity would also promote a
+        // pending block entity (registering a ticker with the level) and drop removed ones from the map, which only
+        // the server thread may do.
+        final BlockEntity blockEntity = chunk.blockEntities.get(pos);
         return blockEntity == null || blockEntity.isRemoved() ? null : blockEntity;
     }
 
