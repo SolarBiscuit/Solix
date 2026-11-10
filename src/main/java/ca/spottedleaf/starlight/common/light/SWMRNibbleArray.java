@@ -348,6 +348,20 @@ public final class SWMRNibbleArray {
             return false;
         }
 
+        // Solix start (0.3.8) - a section whose light ended up all zero goes back to uninitialised (no array). Readers,
+        // edge checks and saving already treat both the same; this frees the 2 KB array and the light packet sends the
+        // section as empty instead of 2 KB of zeros. Only for INIT: HIDDEN data must stay as it is.
+        if (this.updatingDirty && this.stateUpdating == INIT_STATE_INIT && isAllZero(this.storageUpdating)) {
+            freeBytes(this.storageUpdating); // dirty, so this is a working array and never storageVisible
+            this.storageUpdating = null;
+            this.updatingDirty = false;
+            this.stateUpdating = INIT_STATE_UNINIT;
+            if (this.stateVisible == INIT_STATE_UNINIT) {
+                return false; // readers already see all zero
+            }
+        }
+        // Solix end (0.3.8)
+
         // Solix start - a section whose light ended up byte-identical (e.g. darkened and re-lit within one update) did
         // not change: readers already see these values, so drop the copy and report nothing. On the server this saves
         // the light packet (and the client's re-mesh of the section and its neighbours) and the unsaved mark.

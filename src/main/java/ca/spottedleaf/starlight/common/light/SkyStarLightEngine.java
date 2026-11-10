@@ -279,7 +279,7 @@ public final class SkyStarLightEngine extends StarLightEngine {
                             | (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4))
                             | FLAG_HAS_SIDED_TRANSPARENT_BLOCKS // don't know if the block is conditionally transparent
             );
-        } else {
+        } else if (currentLevel != 0) { // Solix (0.3.8) - no 0 -> 0 write (see BlockStarLightEngine#checkBlock)
             this.setLightLevel(worldX, worldY, worldZ, 0);
         }
 

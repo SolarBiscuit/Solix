@@ -95,7 +95,11 @@ public final class BlockStarLightEngine extends StarLightEngine {
         this.checkBlockPos.set(worldX, worldY, worldZ);
         final int emittedLevel = this.callEmission(blockState, this.checkBlockPos) & emittedMask; // Forge
 
-        this.setLightLevel(worldX, worldY, worldZ, emittedLevel);
+        // Solix (0.3.8) - skip the write when the level is unchanged: a 0 -> 0 write would allocate a 2 KB array for
+        // an uninitialised (all zero) nibble and turn it initialised
+        if (currentLevel != emittedLevel) {
+            this.setLightLevel(worldX, worldY, worldZ, emittedLevel);
+        }
         // this accounts for change in emitted light that would cause an increase
         if (emittedLevel != 0) {
             this.appendToIncreaseQueue(
