@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 144" width="700" height="144">
+<defs><linearGradient id="bd" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#BAE6FD"/><stop offset="1" stop-color="#29ABE0"/></linearGradient>
+<linearGradient id="ic" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#BAE6FD"/><stop offset="1" stop-color="#29ABE0"/></linearGradient>
+<radialGradient id="gl" cx=".12" cy=".5" r=".6"><stop offset="0" stop-color="#29ABE0" stop-opacity=".22"/><stop offset="1" stop-color="#29ABE0" stop-opacity="0"/></radialGradient>
+<clipPath id="cp"><rect x="4" y="4" width="692" height="136" rx="34"/></clipPath></defs>
+<rect x="4" y="4" width="692" height="136" rx="34" fill="#0E1320"/>
+<g clip-path="url(#cp)"><rect width="700" height="144" fill="url(#gl)"/><rect x="584" y="22" width="18" height="18" rx="5" fill="#29ABE0" opacity="0.55"/><rect x="612" y="52" width="18" height="18" rx="5" fill="#FF5E5B" opacity="0.3"/><rect x="558" y="82" width="18" height="18" rx="5" fill="#29ABE0" opacity="0.25"/><rect x="626" y="14" width="14" height="14" rx="5" fill="#FF5E5B" opacity="0.22"/><rect x="596" y="98" width="18" height="18" rx="5" fill="#29ABE0" opacity="0.5"/></g>
+<rect x="4" y="4" width="692" height="136" rx="34" fill="none" stroke="url(#bd)" stroke-width="6"/>
+<g transform="translate(76 72.0)"><rect x="-46" y="-46" width="92" height="92" rx="24" fill="#29ABE0"/><g transform="translate(-50 -40)"><path transform="translate(0 0) scale(1)" d="M0 0"/></g><g transform="translate(-45 -34) scale(.88)"><path d="M8 10Q8 6 14 6H72Q94 6 94 30Q94 46 76 50Q70 72 42 72Q8 72 8 40Z" fill="#fff"/><path d="M70 22Q70 20 73 20Q82 20 82 29Q82 36 73 37Q70 37 70 35Z" fill="#29ABE0"/><path d="M40 56C18 43 20 22 31 22C36 22 40 27 40 27C40 27 44 22 49 22C60 22 62 43 40 56Z" fill="#FF5E5B"/></g></g>
+<g font-family="Bahnschrift,'Segoe UI',sans-serif">
+<text x="140" y="60" font-size="26" letter-spacing="3.2" fill="#7DD3FC">SUPPORT ME ON</text>
+<text x="138" y="110" font-size="52" font-weight="700" letter-spacing="1.5" fill="#E8EAF0">Ko-fi</text></g>
+</svg>
