@@ -51,23 +51,13 @@ The figures below are the project's own measurements: single stone blocks placed
 
 | Metric | Result |
 |---|---|
-| **Frame rate** | No claim. Fewer light packets mean fewer client re-renders, up to about 40 % of updated sections depending on the edit |
-| **Light time** | 14 to 20 % less than Starlight's algorithm per single-block edit |
+| **Frame rate** | No claim. Fewer light packets mean fewer client re-renders, up to about 40 % of updated sections depending on the edit. |
+| **Light time** | Roughly 14 to 20 % less than Starlight's algorithm per single-block edit |
 | **Light writes** | 47 % fewer per single-block edit. Big `/fill` batches and glowstone add and remove batches do the same work as the classic algorithm (the ordered mode writes 6 to 9 % fewer) |
 | **Sync** | Light work runs on worker threads, and other mods' light callbacks never wait on the server thread |
 | **Overhead** | No extra memory per block and no save-format change. The bookkeeping that took 5 to 10 % of light worker time in profiles is no longer visible since 0.3.1 |
 
-For benchmarking, `-Dsolix.debug.lightStats=true` logs light engine counters every 10 seconds.
-
-## Roadmap
-
-| Release | Theme | Content |
-|---|---|---|
-| 0.1.x | Port | Starlight 1.1.2 for Forge with its later fixes, the working opacity cache, rebrand |
-| 0.2.x | Parallel | ScalableLux's scheduler, FlowSched, light work ordered by distance |
-| 0.3.x | Less work (**current: 0.3.7**) | Targeted darkness, brightest-first queues, unchanged sections not re-sent, bitmask bookkeeping, the safe light view, failure containment |
-
-Solix has no feature roadmap beyond this. It changes only what a measurement justifies, and the changelog records what was evaluated and not adopted, with the reasons: the Vector API and FFM, per-block pointers to the brightest neighbour, spreading darkness over several ticks, SWAR-packed light arithmetic and delaying light packets. Rendering techniques belong to the renderer and shader mods, not the light engine.
+For benchmarking, `-Dsolix.debug.lightStats=true` logs light engine counters every 10 seconds. Noting the above testing was aggregated from 20 seperate test run in each metric in 4 different contexts
 
 ## Requirements
 
@@ -97,13 +87,13 @@ safe_light_view = true   # give other mods' light callbacks a view that never wa
 
 It needs a JDK 17 and writes `build/libs/solix-<version>-mc1.20.1-forge.jar`.
 
-## Licence and attribution
+## License and attribution
 
 - Solix is licensed under the **GNU Lesser General Public License v3.0 only** ([`LICENSE`](LICENSE)). Copyright (C) Spottedleaf, RelativityMC (ScalableLux) and SolarBiscuit.
 - Solix is a modified version of, and contains code from, [Starlight](https://github.com/PaperMC/Starlight) (Forge branch, Starlight Forge 1.1.2 plus later fixes) by Spottedleaf, and [ScalableLux](https://github.com/RelativityMC/ScalableLux) by RelativityMC and ishland, both LGPL-3.0-only. The Java packages `ca.spottedleaf.starlight.*` are kept unchanged for compatibility with mods that reflect on them.
 - The task executor is [FlowSched](https://github.com/RelativityMC/FlowSched) by RelativityMC and ishland, vendored under the MIT licence ([`LICENSE-FlowSched.txt`](LICENSE-FlowSched.txt)).
 - [`NOTICE`](NOTICE) lists the sources, and [`CHANGELOG.txt`](CHANGELOG.txt) lists the changes made for Solix. [`TECHNICAL_DETAILS.md`](TECHNICAL_DETAILS.md) is Starlight's own write-up of the light engine, kept from upstream.
-- Solix is an independent project. It is not affiliated with, endorsed by, or supported by Spottedleaf, PaperMC, RelativityMC, Mojang Studios, Microsoft or Minecraft Forge.
+- Solix is a fully independent project. It is not affiliated with, endorsed by, or supported by Spottedleaf, PaperMC, RelativityMC, Mojang Studios, Microsoft or Minecraft Forge.
 
 ## Reporting issues
 
