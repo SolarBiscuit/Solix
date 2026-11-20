@@ -1,6 +1,29 @@
 Solix changelog
 ===============
 
+0.3.9 (2026-11-20)
+Fixes from a third code audit (Forge 1.20.1 lifecycle, threading, memory, Java 17/21/25).
+- A chunk whose lighting throws (for example a mod's light callback) no longer takes the server down. 0.3.7 released
+  its light ticket, but the chunk's light step still failed, and that failure spread to the chunks generated around
+  it: in a test with one failing chunk the server crashed ("Exception ticking world"), hundreds of chunks failed to
+  save on stop and stopping hung until the watchdog killed it. The chunk now carries on unlit, is saved unlit and
+  relit on its next load (one error logged per failure).
+- Light view (0.3.6/0.3.7): a block class is only switched to the real level when its light code really fails on
+  Solix's light view. Before, any ClassCastException in a mod's light code did that, including ones unrelated to the
+  view, and the class then stayed on the path that can deadlock. Looking up a block entity from a light worker can no
+  longer fail when it races the server thread changing that chunk's block entities; it reads as no block entity.
+- Memory: a pooled light engine keeps at most 1 MB of light queues after a big update (it could keep up to 16 MB).
+  Every dimension keeps about two engines per light thread for as long as it is loaded.
+- Parallel scheduler: light work queued for a chunk while a worker was lighting it is scheduled as soon as the worker
+  finishes, instead of possibly waiting for the next server tick.
+- Saving and loading: a chunk section outside the world's light range (written by another mod, or left from a world
+  with a different height) no longer makes saving log a warning every time and relight the chunk on every load, or
+  makes loading drop the light of the whole chunk. Such sections are kept as they are.
+- Java 20+: removed the checks for ThreadDeath (deprecated for removal since Java 20, never thrown since). Errors the
+  JVM cannot recover from (out of memory) are no longer swallowed while saving or loading light.
+- Light worker threads get Solix's class loader as their context class loader and log uncaught exceptions.
+- -Dsolix.debug.lightStats=true: numbers are logged with a decimal point on every system locale.
+
 0.3.8 (2026-11-08)
 Memory: sections with no light no longer keep a 2 KB light array (inherited from Starlight).
 - A block change where the light level stays the same (most often 0: a block placed or broken where there is no block
