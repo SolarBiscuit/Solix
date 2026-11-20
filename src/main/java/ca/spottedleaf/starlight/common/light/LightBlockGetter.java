@@ -56,7 +56,15 @@ public final class LightBlockGetter implements BlockGetter {
         // Solix (0.3.7) - Forge's lookup of an already registered block entity. LevelChunk#getBlockEntity would also
         // promote a pending block entity (registering a ticker with the level) and drop removed ones from the map,
         // which only the server thread may do.
-        final BlockEntity blockEntity = chunk.getExistingBlockEntity(pos);
+        final BlockEntity blockEntity;
+        try {
+            blockEntity = chunk.getExistingBlockEntity(pos);
+        } catch (final RuntimeException ex) {
+            // Solix (0.3.9) - a full chunk keeps its block entities in a plain HashMap that the server thread changes
+            // while this runs on a light worker. A read racing a resize can fail (e.g. ClassCastException from a tree
+            // bin); report no block entity, which mods already have to handle (the real level returns null off-thread)
+            return null;
+        }
         return blockEntity == null || blockEntity.isRemoved() ? null : blockEntity;
     }
 

@@ -25,7 +25,26 @@ final class LightViewFallback {
         return any && REAL_LEVEL.contains(state.getBlock().getClass());
     }
 
-    static void record(final BlockState state, final ClassCastException ex) {
+    private static final String VIEW_CLASS_NAME = LightBlockGetter.class.getName();
+
+    /**
+     * Solix (0.3.9): records the block class only when the exception comes from casting Solix's light view, and
+     * returns whether it did. Any other ClassCastException in a mod's light code (its own casts, or a HashMap read
+     * racing the server thread) used to send the block class to the real level for good, the path that can deadlock,
+     * with a warning blaming the view. Since Java 11 the message of a failed cast names both classes ("class X cannot be
+     * cast to class Y", and Class#cast: "Cannot cast X to Y"). A null message means the JIT threw a preallocated
+     * exception (OmitStackTraceInFastThrow) and the cause is unknown, so the view is assumed, as before.
+     */
+    static boolean recordIfViewCast(final BlockState state, final ClassCastException ex) {
+        final String message = ex.getMessage();
+        if (message != null && !message.contains(VIEW_CLASS_NAME)) {
+            return false;
+        }
+        record(state, ex);
+        return true;
+    }
+
+    private static void record(final BlockState state, final ClassCastException ex) {
         final Class<?> blockClass = state.getBlock().getClass();
         if (REAL_LEVEL.add(blockClass)) {
             any = true;

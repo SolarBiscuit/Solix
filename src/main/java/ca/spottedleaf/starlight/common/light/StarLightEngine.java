@@ -172,7 +172,9 @@ public abstract class StarLightEngine {
             try {
                 return state.getLightEmission(access, pos);
             } catch (final ClassCastException ex) {
-                LightViewFallback.record(state, ex);
+                if (!LightViewFallback.recordIfViewCast(state, ex)) { // Solix (0.3.9) - only casts of the view
+                    throw ex;
+                }
                 return state.getLightEmission(this.world, pos);
             }
         }
@@ -188,7 +190,9 @@ public abstract class StarLightEngine {
             try {
                 return state.getLightBlock(access, pos);
             } catch (final ClassCastException ex) {
-                LightViewFallback.record(state, ex);
+                if (!LightViewFallback.recordIfViewCast(state, ex)) { // Solix (0.3.9) - only casts of the view
+                    throw ex;
+                }
                 return state.getLightBlock(this.world, pos);
             }
         }
@@ -204,7 +208,9 @@ public abstract class StarLightEngine {
             try {
                 return state.getFaceOcclusionShape(access, pos, direction);
             } catch (final ClassCastException ex) {
-                LightViewFallback.record(state, ex);
+                if (!LightViewFallback.recordIfViewCast(state, ex)) { // Solix (0.3.9) - only casts of the view
+                    throw ex;
+                }
                 return state.getFaceOcclusionShape(this.world, pos, direction);
             }
         }
@@ -1304,6 +1310,7 @@ public abstract class StarLightEngine {
         Arrays.fill(this.increaseQueueLengths, 0);
         Arrays.fill(this.decreaseQueueLengths, 0);
         // Solix (0.3.3) - engines are pooled for the world's lifetime: do not keep a huge queue from one big update
+        long retained = 0L;
         for (int bucket = 0; bucket < 16; ++bucket) {
             if (this.increaseQueues[bucket].length > MAX_RETAINED_QUEUE) {
                 this.increaseQueues[bucket] = new long[initialQueueLength(ORDERED, bucket)];
@@ -1311,10 +1318,28 @@ public abstract class StarLightEngine {
             if (this.decreaseQueues[bucket].length > MAX_RETAINED_QUEUE) {
                 this.decreaseQueues[bucket] = new long[initialQueueLength(TARGETED, bucket)];
             }
+            retained += this.increaseQueues[bucket].length + this.decreaseQueues[bucket].length;
+        }
+        // Solix (0.3.9) - the per-bucket cap alone still let one engine keep 32 buckets of up to 512 KB each (16 MB),
+        // and every dimension pools about two engines per light thread. Over the total budget, shrink every bucket that
+        // grew back to its initial size; the next big update grows them again
+        if (retained > MAX_RETAINED_QUEUE_TOTAL) {
+            for (int bucket = 0; bucket < 16; ++bucket) {
+                final int increaseInitial = initialQueueLength(ORDERED, bucket);
+                if (this.increaseQueues[bucket].length > increaseInitial) {
+                    this.increaseQueues[bucket] = new long[increaseInitial];
+                }
+                final int decreaseInitial = initialQueueLength(TARGETED, bucket);
+                if (this.decreaseQueues[bucket].length > decreaseInitial) {
+                    this.decreaseQueues[bucket] = new long[decreaseInitial];
+                }
+            }
         }
     }
 
     protected static final int MAX_RETAINED_QUEUE = 1 << 16;
+    // Solix (0.3.9) - all 32 queue buckets of one engine together, in entries (1 MB)
+    protected static final int MAX_RETAINED_QUEUE_TOTAL = 1 << 17;
 
     protected static int initialQueueLength(final boolean bucketed, final int bucket) {
         return bucketed ? 512 : (bucket == FIFO_BUCKET ? 16 * 16 * 16 : 16);
