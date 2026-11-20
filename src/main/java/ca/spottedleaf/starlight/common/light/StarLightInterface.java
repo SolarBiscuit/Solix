@@ -682,6 +682,12 @@ public final class StarLightInterface {
                                     // pass, otherwise that pass can skip work queued for this chunk meanwhile
                                     future.complete(null);
                                     if (tasks != null) {
+                                        // Solix (0.3.9) - work queued for this chunk while it ran was skipped by any pass in
+                                        // between (the chunk was in flight), and that pass cleared the dirty flag: set it
+                                        // again so the throttle does not hold this work back until the next server tick
+                                        if (this.lightQueue.hasTasks(pos)) {
+                                            this.lightQueue.queueDirty = true;
+                                        }
                                         threadedLevelLightEngine.tryScheduleUpdate();
                                     }
                                 } catch (final Throwable thr) {
@@ -838,6 +844,11 @@ public final class StarLightInterface {
             final ChunkTasks tasks = this.chunkTasks.remove(chunkKey);
             this.size = this.chunkTasks.size();
             return tasks;
+        }
+
+        /** Solix (0.3.9): whether work is queued for the chunk. */
+        public synchronized boolean hasTasks(final long chunkKey) {
+            return this.chunkTasks.containsKey(chunkKey);
         }
 
         /** Adds the keys of all chunks with queued work to the list and clears the dirty flag. */

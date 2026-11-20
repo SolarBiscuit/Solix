@@ -35,6 +35,12 @@ public final class GlobalExecutors {
         static final ExecutorManager EXECUTOR = new ExecutorManager(SolixConfig.PARALLELISM, thread -> {
             thread.setDaemon(true);
             thread.setName("Solix Light Worker #" + COUNTER.getAndIncrement());
+            // Solix (0.3.9) - the workers are created by whichever thread first schedules light work (a vanilla worker
+            // or the light mailbox thread) and would inherit its context class loader. Mods' light callbacks run on them,
+            // so give them the game class loader Solix itself was loaded by, and log anything that escapes a task
+            thread.setContextClassLoader(GlobalExecutors.class.getClassLoader());
+            thread.setUncaughtExceptionHandler((final Thread t, final Throwable thr) ->
+                    LOGGER.error("Solix: uncaught exception in " + t.getName(), thr));
         }, PRIORITY_COUNT);
     }
 

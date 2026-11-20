@@ -3,6 +3,7 @@ package ca.spottedleaf.starlight.common.light;
 import ca.spottedleaf.starlight.common.config.SolixConfig;
 import com.mojang.logging.LogUtils;
 import org.slf4j.Logger;
+import java.util.Locale;
 import java.util.concurrent.atomic.LongAccumulator;
 import java.util.concurrent.atomic.LongAdder;
 
@@ -69,7 +70,8 @@ public final class LightStats {
                     continue;
                 }
                 totalCalls += calls;
-                kinds.append(String.format("%s %d (avg %.1f us, max %.1f us, total %.1f ms), ",
+                // Solix (0.3.9) - Locale.ROOT: the default locale printed decimal commas on some systems
+                kinds.append(String.format(Locale.ROOT, "%s %d (avg %.1f us, max %.1f us, total %.1f ms), ",
                         KIND_NAMES[i], calls, nanos / 1.0E3 / calls, max / 1.0E3, nanos / 1.0E6));
             }
             final long increasePops = this.increasePops.sumThenReset();
