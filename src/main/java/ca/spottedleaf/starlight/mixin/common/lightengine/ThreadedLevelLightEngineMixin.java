@@ -6,6 +6,7 @@ import ca.spottedleaf.starlight.common.light.StarLightInterface;
 import ca.spottedleaf.starlight.common.light.StarLightLightingProvider;
 import ca.spottedleaf.starlight.common.thread.GlobalExecutors;
 import ca.spottedleaf.starlight.common.util.CoordinateUtils;
+import ca.spottedleaf.starlight.common.util.ThrowableUtil;
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
@@ -228,6 +229,15 @@ public abstract class ThreadedLevelLightEngineMixin extends LevelLightEngine imp
                     // catch what we miss here.
                     this.getLightEngine().checkChunkEdges(chunkPos.x, chunkPos.z);
                 }
+            } catch (final Throwable thr) {
+                // Solix (0.3.9) - never fail the chunk's LIGHT future. ChunkHolder folds it into chunkToSave, and an
+                // exceptional chunkToSave breaks the holder for the rest of the session: autosave's getNow throws, and
+                // the unload callback never runs, so the holder stays in ChunkMap's pending unloads, ChunkMap#hasWork
+                // stays true and server stop waits forever. Instead the chunk carries on unlit (readers and the
+                // engines already handle that), is saved unlit and relit on its next load, as 0.3.7 intended.
+                ThrowableUtil.rethrowIfFatal(thr);
+                chunk.setLightCorrect(false);
+                LOGGER.error("Solix: failed to light chunk " + chunkPos + ", it stays unlit until it is loaded again", thr);
             } finally {
                 this.chunkMap.releaseLightTicket(chunkPos);
             }

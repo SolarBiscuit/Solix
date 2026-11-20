@@ -12,6 +12,8 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.ChunkStatus;
 import org.slf4j.Logger;
+import java.util.ArrayList;
+import java.util.List;
 
 public final class SaveUtil {
 
@@ -33,9 +35,7 @@ public final class SaveUtil {
         } catch (final Throwable ex) {
             // failing to inject is not fatal so we catch anything here. if it fails, it will have correctly set lit to false
             // for Vanilla to relight on load and it will not set our lit tag so we will relight on load
-            if (ex instanceof ThreadDeath) {
-                throw (ThreadDeath)ex;
-            }
+            ThrowableUtil.rethrowIfFatal(ex); // Solix (0.3.9) - was a ThreadDeath check, see ThrowableUtil
             LOGGER.warn("Failed to inject light data into save data for chunk " + chunk.getPos() + ", chunk light will be recalculated on its next load", ex);
         }
     }
@@ -62,10 +62,22 @@ public final class SaveUtil {
         CompoundTag[] sections = new CompoundTag[maxSection - minSection + 1];
 
         ListTag sectionsStored = tag.getList("sections", 10);
+        // Solix (0.3.9) - sections outside the light range (written by another mod, or left over from a world with a
+        // different height) are kept as they are. They used to throw here after the sections before them were already
+        // stripped, which logged a warning on every save and relit the chunk on every load
+        List<CompoundTag> outOfRange = null;
 
         for (int i = 0; i < sectionsStored.size(); ++i) {
             CompoundTag sectionStored = sectionsStored.getCompound(i);
             int k = sectionStored.getByte("Y");
+
+            if (k < minSection || k > maxSection) {
+                if (outOfRange == null) {
+                    outOfRange = new ArrayList<>();
+                }
+                outOfRange.add(sectionStored);
+                continue;
+            }
 
             // strip light data
             sectionStored.remove("BlockLight");
@@ -118,6 +130,9 @@ public final class SaveUtil {
                 sectionsStored.add(section);
             }
         }
+        if (outOfRange != null) {
+            sectionsStored.addAll(outOfRange); // Solix (0.3.9)
+        }
         tag.put("sections", sectionsStored);
         if (lit) {
             tag.putInt(STARLIGHT_VERSION_TAG, STARLIGHT_LIGHT_VERSION); // only mark as fully lit after we have successfully injected our data
@@ -130,9 +145,7 @@ public final class SaveUtil {
         } catch (final Throwable ex) {
             // failing to inject is not fatal so we catch anything here. if it fails, then we simply relight. Not a problem, we get correct
             // lighting in both cases.
-            if (ex instanceof ThreadDeath) {
-                throw (ThreadDeath)ex;
-            }
+            ThrowableUtil.rethrowIfFatal(ex); // Solix (0.3.9) - was a ThreadDeath check, see ThrowableUtil
             LOGGER.warn("Failed to load light for chunk " + pos + ", light will be recalculated", ex);
         }
     }
@@ -160,6 +173,11 @@ public final class SaveUtil {
             for (int i = 0; i < sections.size(); ++i) {
                 CompoundTag sectionData = sections.getCompound(i);
                 int y = sectionData.getByte("Y");
+
+                if (y < minSection || y > maxSection) {
+                    // Solix (0.3.9) - no light section there; this used to throw and drop the light of the whole chunk
+                    continue;
+                }
 
                 if (sectionData.contains("BlockLight", 7)) {
                     // this is where our diff is
