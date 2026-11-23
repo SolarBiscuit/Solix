@@ -121,3 +121,6 @@ run/
 
 # Local-only notes and audit reports (never pushed). docs/logo and docs/img stay tracked.
 /docs/**/*.md
+
+# Local-only research code and data (never pushed)
+/docs/research/

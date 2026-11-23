@@ -1,6 +1,19 @@
 Solix changelog
 ===============
 
+0.3.10 (2026-11-23)
+From an assessment of an outside optimisation proposal: one fix, two memory/CPU improvements; light values unchanged.
+- A light update that throws (a mod's light callback, for example) no longer leaves its half-done work behind. Its
+  sections go back to the light they had before the update, so the retry starts from consistent light. Before, the
+  retry started from the half-propagated light: a removed light source whose darkening was cut short kept lighting
+  blocks it no longer reached, until those chunks were relit. In a test with one failure injected while removing a
+  large glowstone floor, 0.3.9 kept wrong light every time; now the result equals a full relight.
+- Stairs, slabs and other blocks with partial faces: the check whether light can pass between two block faces is
+  remembered per light engine instead of being recomputed (it built new shapes every time). In a test area full of
+  stairs and slabs the light threads used 76 % less CPU time and allocated 96 % less memory.
+- Memory: sky light sections that are fully lit (about 40 % of the sky sections that keep light data) now share one
+  array instead of each keeping 2 KB, also after loading from disk and on the client.
+
 0.3.9 (2026-11-20)
 Fixes from a third code audit (Forge 1.20.1 lifecycle, threading, memory, Java 17/21/25).
 - A chunk whose lighting throws (for example a mod's light callback) no longer takes the server down. 0.3.7 released
