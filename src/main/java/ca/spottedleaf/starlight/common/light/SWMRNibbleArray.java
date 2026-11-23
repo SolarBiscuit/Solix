@@ -38,7 +38,25 @@ public final class SWMRNibbleArray {
     // Solix (0.3.3) - at most this many spare arrays per thread (256 KB); the pool used to keep its peak size forever
     private static final int MAX_POOLED_BYTES = 128;
 
+    // Solix start (0.3.10) - one shared array for every section whose light is 15 everywhere
+    // About 40 % of the sky light sections that keep an array are all 15 (open air next to the surface, initialised as
+    // full). They now share this array instead of each keeping 2 KB. It is never written: every write goes to a working
+    // array first (set/setFull/setZero/extrudeLower copy or allocate one when the section is not dirty), updateVisible
+    // never copies into it (it publishes the working array instead), and it never enters the pool.
+    private static final byte[] FULL_BYTES = new byte[ARRAY_SIZE];
+    static {
+        Arrays.fill(FULL_BYTES, (byte)-1);
+    }
+
+    private static byte[] shareIfFull(final byte[] bytes) {
+        return bytes != null && Arrays.equals(bytes, FULL_BYTES) ? FULL_BYTES : bytes;
+    }
+    // Solix end (0.3.10)
+
     private static void freeBytes(final byte[] bytes) {
+        if (bytes == FULL_BYTES) {
+            return; // Solix (0.3.10) - shared, see FULL_BYTES
+        }
         final ArrayDeque<byte[]> pool = WORKING_BYTES_POOL.get();
         if (pool.size() < MAX_POOLED_BYTES) {
             pool.addFirst(bytes);
@@ -87,7 +105,7 @@ public final class SWMRNibbleArray {
             throw new IllegalArgumentException("Data of wrong length: " + bytes.length);
         }
         this.stateVisible = this.stateUpdating = bytes == null ? (isNullNibble ? INIT_STATE_NULL : INIT_STATE_UNINIT) : INIT_STATE_INIT;
-        this.storageUpdating = this.storageVisible = bytes;
+        this.storageUpdating = this.storageVisible = shareIfFull(bytes); // Solix (0.3.10)
     }
 
     public SWMRNibbleArray(final byte[] bytes, final int state) {
@@ -98,7 +116,7 @@ public final class SWMRNibbleArray {
             throw new IllegalArgumentException("Data cannot be null and have state be initialised");
         }
         this.stateUpdating = this.stateVisible = state;
-        this.storageUpdating = this.storageVisible = bytes;
+        this.storageUpdating = this.storageVisible = shareIfFull(bytes); // Solix (0.3.10) - e.g. loaded from disk
     }
 
     @Override
@@ -389,11 +407,26 @@ public final class SWMRNibbleArray {
         }
         // Solix end
 
+        // Solix start (0.3.10) - light that ended up 15 everywhere is published as the shared FULL_BYTES
+        if (this.updatingDirty && this.storageUpdating != null && (this.stateUpdating == INIT_STATE_INIT || this.stateUpdating == INIT_STATE_HIDDEN)
+                && Arrays.equals(this.storageUpdating, FULL_BYTES)) {
+            freeBytes(this.storageUpdating); // dirty, so this is a working array
+            this.storageUpdating = FULL_BYTES;
+            this.updatingDirty = false;
+            if (this.storageVisible == FULL_BYTES && this.stateVisible == this.stateUpdating) {
+                return false; // readers already see these values
+            }
+        }
+        // Solix end (0.3.10)
+
         synchronized (this) {
             if (this.stateUpdating == INIT_STATE_NULL || this.stateUpdating == INIT_STATE_UNINIT) {
                 this.storageVisible = null;
             } else {
-                if (this.storageVisible == null) {
+                if (this.storageUpdating == FULL_BYTES) {
+                    this.storageVisible = FULL_BYTES; // Solix (0.3.10)
+                } else if (this.storageVisible == null || this.storageVisible == FULL_BYTES) {
+                    // Solix (0.3.10) - never copy into the shared FULL_BYTES, publish a copy of the working array instead
                     this.storageVisible = this.storageUpdating.clone();
                 } else {
                     if (this.storageUpdating != this.storageVisible) {
