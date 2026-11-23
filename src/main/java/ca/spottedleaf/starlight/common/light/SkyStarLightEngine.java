@@ -344,7 +344,7 @@ public final class SkyStarLightEngine extends StarLightEngine {
                 this.recalcNeighbourPos.set(offX, offY, offZ);
                 final VoxelShape neighbourFace = this.callFaceShape(neighbourState, this.recalcNeighbourPos, direction.opposite.nms);
                 final VoxelShape thisFace = conditionallyOpaqueState == null ? Shapes.empty() : this.callFaceShape(conditionallyOpaqueState, this.recalcCenterPos, direction.nms);
-                if (Shapes.faceShapeOccludes(thisFace, neighbourFace)) {
+                if (this.faceOccludes(thisFace, neighbourFace)) {
                     // not allowed to propagate
                     continue;
                 }
@@ -641,7 +641,7 @@ public final class SkyStarLightEngine extends StarLightEngine {
             if (((ExtendedAbstractBlockState)above).isConditionallyFullOpaque()) {
                 this.mutablePos2.set(worldX, startY + 1, worldZ);
                 fromShape = this.callFaceShape(above, this.mutablePos2, AxisDirection.NEGATIVE_Y.nms);
-                if (Shapes.faceShapeOccludes(Shapes.empty(), fromShape)) {
+                if (this.faceOccludes(Shapes.empty(), fromShape)) {
                     // above wont let us propagate
                     break;
                 }
@@ -670,7 +670,7 @@ public final class SkyStarLightEngine extends StarLightEngine {
                 if (((ExtendedAbstractBlockState)current).isConditionallyFullOpaque()) {
                     final VoxelShape cullingFace = this.callFaceShape(current, mutablePos, AxisDirection.POSITIVE_Y.nms);
 
-                    if (Shapes.faceShapeOccludes(fromShape, cullingFace)) {
+                    if (this.faceOccludes(fromShape, cullingFace)) {
                         // can't propagate here, we're done on this column.
                         break;
                     }

@@ -180,7 +180,7 @@ public final class BlockStarLightEngine extends StarLightEngine {
                 this.recalcNeighbourPos.set(offX, offY, offZ);
                 final VoxelShape neighbourFace = this.callFaceShape(neighbourState, this.recalcNeighbourPos, direction.opposite.nms);
                 final VoxelShape thisFace = conditionallyOpaqueState == null ? Shapes.empty() : this.callFaceShape(conditionallyOpaqueState, this.recalcCenterPos, direction.nms);
-                if (Shapes.faceShapeOccludes(thisFace, neighbourFace)) {
+                if (this.faceOccludes(thisFace, neighbourFace)) {
                     // not allowed to propagate
                     continue;
                 }

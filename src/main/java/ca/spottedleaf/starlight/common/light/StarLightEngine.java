@@ -217,6 +217,48 @@ public abstract class StarLightEngine {
         return state.getFaceOcclusionShape(access, pos, direction);
     }
 
+    // Solix start (0.3.10) - face occlusion cache
+    // Shapes#faceShapeOccludes joins both face shapes and tests the result against the full face every time it is
+    // called. That join allocates and was 92 % of the light workers' CPU time and 99 % of their allocations in a test
+    // area full of stairs and slabs. Its result only depends on the two shapes, and the face shapes of block states
+    // come from their caches (the same objects every time), so remember the last results by shape identity. Shapes are
+    // immutable, and an engine is only used by one thread at a time; a shape computed fresh per call (blocks without a
+    // shape cache) simply never hits. The result does not depend on the order of the two shapes (their union is
+    // tested), so pairs are stored in one order. About 9 KB per engine.
+    private static final int FACE_CACHE_SIZE = 1024; // power of two
+    private final VoxelShape[] faceCacheFirst = new VoxelShape[FACE_CACHE_SIZE];
+    private final VoxelShape[] faceCacheSecond = new VoxelShape[FACE_CACHE_SIZE];
+    private final boolean[] faceCacheResult = new boolean[FACE_CACHE_SIZE];
+
+    protected final boolean faceOccludes(final VoxelShape first, final VoxelShape second) {
+        final VoxelShape block = Shapes.block();
+        if (first == block || second == block) {
+            return true; // the first answer Shapes#faceShapeOccludes gives, without a lookup
+        }
+        final int firstHash = System.identityHashCode(first);
+        final int secondHash = System.identityHashCode(second);
+        final VoxelShape low, high;
+        if (firstHash <= secondHash) {
+            low = first;
+            high = second;
+        } else {
+            low = second;
+            high = first;
+        }
+        int hash = Math.min(firstHash, secondHash) * 0x9E3779B9 + Math.max(firstHash, secondHash);
+        hash ^= hash >>> 16;
+        final int index = hash & (FACE_CACHE_SIZE - 1);
+        if (this.faceCacheFirst[index] == low && this.faceCacheSecond[index] == high) {
+            return this.faceCacheResult[index];
+        }
+        final boolean result = Shapes.faceShapeOccludes(first, second);
+        this.faceCacheFirst[index] = low;
+        this.faceCacheSecond[index] = high;
+        this.faceCacheResult[index] = result;
+        return result;
+    }
+    // Solix end (0.3.10)
+
     protected final void setupEncodeOffset(final int centerX, final int centerY, final int centerZ) {
         // 31 = center + encodeOffset
         this.encodeOffsetX = 31 - centerX;
@@ -1479,7 +1521,7 @@ public abstract class StarLightEngine {
                             if (((ExtendedAbstractBlockState)blockState).isConditionallyFullOpaque()) {
                                 final VoxelShape cullingFace = this.callFaceShape(blockState, this.mutablePos1, propagate.getOpposite().nms);
 
-                                if (Shapes.faceShapeOccludes(Shapes.empty(), cullingFace)) {
+                                if (this.faceOccludes(Shapes.empty(), cullingFace)) {
                                     continue;
                                 }
                                 flags |= FLAG_HAS_SIDED_TRANSPARENT_BLOCKS;
@@ -1519,7 +1561,7 @@ public abstract class StarLightEngine {
 
                         final VoxelShape fromShape = (((ExtendedAbstractBlockState)fromBlock).isConditionallyFullOpaque()) ? this.callFaceShape(fromBlock, this.mutablePos2, propagate.nms) : Shapes.empty();
 
-                        if (fromShape != Shapes.empty() && Shapes.faceShapeOccludes(Shapes.empty(), fromShape)) {
+                        if (fromShape != Shapes.empty() && this.faceOccludes(Shapes.empty(), fromShape)) {
                             continue;
                         }
 
@@ -1563,7 +1605,7 @@ public abstract class StarLightEngine {
                             if (((ExtendedAbstractBlockState)blockState).isConditionallyFullOpaque()) {
                                 final VoxelShape cullingFace = this.callFaceShape(blockState, this.mutablePos1, propagate.getOpposite().nms);
 
-                                if (Shapes.faceShapeOccludes(fromShape, cullingFace)) {
+                                if (this.faceOccludes(fromShape, cullingFace)) {
                                     continue;
                                 }
                                 flags |= FLAG_HAS_SIDED_TRANSPARENT_BLOCKS;
@@ -1667,7 +1709,7 @@ public abstract class StarLightEngine {
                 } else {
                     centerFace = Shapes.empty();
                 }
-                if (Shapes.faceShapeOccludes(neighbourFace, centerFace)) {
+                if (this.faceOccludes(neighbourFace, centerFace)) {
                     continue;
                 }
             }
@@ -1836,7 +1878,7 @@ public abstract class StarLightEngine {
                             if (((ExtendedAbstractBlockState)blockState).isConditionallyFullOpaque()) {
                                 final VoxelShape cullingFace = this.callFaceShape(blockState, this.mutablePos1, propagate.getOpposite().nms);
 
-                                if (Shapes.faceShapeOccludes(Shapes.empty(), cullingFace)) {
+                                if (this.faceOccludes(Shapes.empty(), cullingFace)) {
                                     continue;
                                 }
                                 flags |= FLAG_HAS_SIDED_TRANSPARENT_BLOCKS;
@@ -1912,7 +1954,7 @@ public abstract class StarLightEngine {
 
                         final VoxelShape fromShape = (((ExtendedAbstractBlockState)fromBlock).isConditionallyFullOpaque()) ? this.callFaceShape(fromBlock, this.mutablePos2, propagate.nms) : Shapes.empty();
 
-                        if (fromShape != Shapes.empty() && Shapes.faceShapeOccludes(Shapes.empty(), fromShape)) {
+                        if (fromShape != Shapes.empty() && this.faceOccludes(Shapes.empty(), fromShape)) {
                             continue;
                         }
 
@@ -1990,7 +2032,7 @@ public abstract class StarLightEngine {
                             if (((ExtendedAbstractBlockState)blockState).isConditionallyFullOpaque()) {
                                 final VoxelShape cullingFace = this.callFaceShape(blockState, this.mutablePos1, propagate.getOpposite().nms);
 
-                                if (Shapes.faceShapeOccludes(fromShape, cullingFace)) {
+                                if (this.faceOccludes(fromShape, cullingFace)) {
                                     continue;
                                 }
                                 flags |= FLAG_HAS_SIDED_TRANSPARENT_BLOCKS;
