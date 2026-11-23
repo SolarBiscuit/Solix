@@ -342,6 +342,21 @@ public final class SWMRNibbleArray {
         this.updatingDirty = true;
     }
 
+    // Solix start (0.3.10) - operation type: updating
+    // Drops every change made since the last updateVisible(): the working array goes back to the pool and the updating
+    // state is again what readers see. A light update that threw calls this for the sections it touched. Before, the
+    // half-propagated light stayed in the working copy: the retry started from it (a removed light whose decrease was
+    // cut short then left light behind for good) and the next update of the section published it.
+    public void discardUpdating() {
+        if (this.updatingDirty && this.storageUpdating != null && this.storageUpdating != this.storageVisible) {
+            freeBytes(this.storageUpdating);
+        }
+        this.storageUpdating = this.storageVisible;
+        this.stateUpdating = this.stateVisible;
+        this.updatingDirty = false;
+    }
+    // Solix end (0.3.10)
+
     // operation type: updating
     public boolean updateVisible() {
         if (!this.isDirty()) {

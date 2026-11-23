@@ -346,6 +346,17 @@ public abstract class StarLightEngine {
         }
     }
 
+    // Solix (0.3.10) - a light update threw: drop the unpublished changes of every section it touched, see
+    // SWMRNibbleArray#discardUpdating. Sections already published (and fresh nibbles that never reached a chunk) are
+    // not dirty and stay as they are
+    protected final void discardDirtyNibbles() {
+        for (final SWMRNibbleArray nibble : this.nibbleCache) {
+            if (nibble != null && nibble.isDirty()) {
+                nibble.discardUpdating();
+            }
+        }
+    }
+
     protected final void destroyCaches() {
         Arrays.fill(this.sectionCache, null);
         Arrays.fill(this.nibbleCache, null);
@@ -529,6 +540,9 @@ public abstract class StarLightEngine {
                 this.forceReportChangedSections(positions); // Solix (0.3.3)
             }
             this.updateVisible(lightAccess);
+        } catch (final Throwable thr) {
+            this.discardDirtyNibbles(); // Solix (0.3.10) - do not keep or publish half-propagated light
+            throw thr;
         } finally {
             this.destroyCaches();
             if (LightStats.ENABLED) {
@@ -808,6 +822,9 @@ public abstract class StarLightEngine {
                 this.setEmptinessMap(chunk, ret);
             }
             this.updateVisible(lightAccess);
+        } catch (final Throwable thr) {
+            this.discardDirtyNibbles(); // Solix (0.3.10) - do not keep or publish half-propagated light
+            throw thr;
         } finally {
             this.destroyCaches();
         }
@@ -826,6 +843,9 @@ public abstract class StarLightEngine {
                 this.setEmptinessMap(chunk, ret);
             }
             this.updateVisible(lightAccess);
+        } catch (final Throwable thr) {
+            this.discardDirtyNibbles(); // Solix (0.3.10) - do not keep or publish half-propagated light
+            throw thr;
         } finally {
             this.destroyCaches();
         }
@@ -1017,6 +1037,9 @@ public abstract class StarLightEngine {
             }
             this.checkChunkEdges(lightAccess, chunk, this.minLightSection, this.maxLightSection);
             this.updateVisible(lightAccess);
+        } catch (final Throwable thr) {
+            this.discardDirtyNibbles(); // Solix (0.3.10) - do not keep or publish half-propagated light
+            throw thr;
         } finally {
             this.destroyCaches();
             if (LightStats.ENABLED) {
@@ -1035,6 +1058,9 @@ public abstract class StarLightEngine {
             }
             this.checkChunkEdges(lightAccess, chunk, sections);
             this.updateVisible(lightAccess);
+        } catch (final Throwable thr) {
+            this.discardDirtyNibbles(); // Solix (0.3.10) - do not keep or publish half-propagated light
+            throw thr;
         } finally {
             this.destroyCaches();
             if (LightStats.ENABLED) {
@@ -1072,6 +1098,9 @@ public abstract class StarLightEngine {
             this.lightChunk(lightAccess, chunk, true);
             this.setNibbles(chunk, nibbles);
             this.updateVisible(lightAccess);
+        } catch (final Throwable thr) {
+            this.discardDirtyNibbles(); // Solix (0.3.10) - do not keep or publish half-propagated light
+            throw thr;
         } finally {
             this.destroyCaches();
             if (LightStats.ENABLED) {
@@ -1174,6 +1203,9 @@ public abstract class StarLightEngine {
                     }
 
                     this.lightChunk(lightAccess, neighbour, false);
+                } catch (final Throwable thr) {
+                    this.discardDirtyNibbles(); // Solix (0.3.10) - do not keep or publish half-propagated light
+                    throw thr;
                 } finally {
                     this.destroyCaches();
                 }
